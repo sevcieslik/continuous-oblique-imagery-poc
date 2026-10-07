@@ -1,0 +1,105 @@
+Continuous Oblique Imagery POC v0.3
+===================================
+
+1. Put these files in the NYPA project root (or another working folder):
+
+   continuous_oblique_v03.py
+   requirements_continuous_oblique_v03.txt
+
+2. Install/update dependencies:
+
+   python -m pip install -r requirements_continuous_oblique_v03.txt
+
+3. Run on NYPA:
+
+   python .\continuous_oblique_v03.py `
+     "D:\Sev\Obliques\NYPA" `
+     --circuit DH1
+
+Default output:
+
+   D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v03
+
+What changed in v0.3
+--------------------
+
+- Approximate optical target from EO Omega/Phi/Kappa and PLS centreline elevation.
+- primary_span_optical and primary_span_geometry are retained separately.
+- primary_span uses OPK optical targeting when the projected optical target is close enough to the circuit; otherwise it falls back to geometric coverage midpoint.
+- Missing DXF footprints can be recovered as PROVISIONAL 1D circuit coverage from EO order and neighbouring confirmed footprints.
+- CONFIRMED and PROVISIONAL product images are explicitly separated.
+- Direction coverage reports both confirmed-only coverage and confirmed+provisional coverage.
+- Residual gaps are classified as CAPTURE_GAP, METADATA_GAP or SOURCE_DATA_GAP.
+- Ordered transition discontinuities can be classified as SEQUENCE_GAP.
+- OPK attribution is benchmarked separately against the existing 163 where raw-to-final source matching is high/medium confidence.
+- Pillow decompression-bomb warnings are suppressed only for trusted local aerial JPG downsampling in the benchmark.
+
+Main v0.3 outputs
+-----------------
+
+   continuous_oblique_poc_v03.gpkg
+   image_index.csv
+   footprint_recovery.csv
+   circuit_runs.csv
+   transitions.csv
+   flight_transitions.csv
+   run_internal_gaps.csv
+   direction_coverage.csv
+   direction_coverage_confirmed.csv
+   direction_gaps.csv
+   gap_events.csv
+   span_benchmark.csv
+   existing_163_benchmark.csv
+   opk_benchmark.csv
+   structure_observations.csv
+   summary.json
+
+Important
+---------
+
+- Source imagery is never modified, renamed, deleted or copied.
+- A recovered footprint is PROVISIONAL, never CONFIRMED.
+- v0.3 only recovers genuinely missing DXF footprints. If a footprint exists but does not intersect the circuit, the image is not fabricated into coverage.
+- SIDE/CROSSING imagery stays indexed but is not a product candidate unless --allow-side is used.
+- Existing 163 is used as a benchmark, not as an instruction to reproduce every historical Production decision.
+- OPK targeting is still approximate. Exact camera projection needs camera calibration and will be a later stage.
+- DINOv3 is still not used in v0.3.
+
+Useful switches
+---------------
+
+   --skip-image-benchmark
+       Faster run. Does not read raw/final JPG pixels.
+
+   --disable-footprint-recovery
+       Shows confirmed footprint coverage only.
+
+   --recovery-max-neighbor-gap 10
+       Maximum EO-order distance used for provisional missing-footprint recovery.
+
+   --optical-max-distance 500
+       Maximum OPK projected target distance from the circuit in project units.
+       NYPA is ftUS, so the default is 500 ft.
+
+   --opk-convention STANDARD_KPO
+       Default approximate OPK convention.
+
+   --reference-mode structure
+       Uses a structure rather than span as the primary reference entity.
+
+   --allow-side
+       Allows SIDE-view imagery as product candidates. Default is false.
+
+Recommended run
+---------------
+
+   python .\continuous_oblique_v03.py `
+     "D:\Sev\Obliques\NYPA" `
+     --circuit DH1
+
+For a fast first geometry run:
+
+   python .\continuous_oblique_v03.py `
+     "D:\Sev\Obliques\NYPA" `
+     --circuit DH1 `
+     --skip-image-benchmark

@@ -1,0 +1,60 @@
+Manual 163 audit v0.2
+
+What changed
+------------
+1. Very high DINO similarity between local consecutive/nearby frames is treated as
+   EXPECTED_HIGH_OVERLAP, not as a duplicate error.
+2. POSSIBLE_REDUNDANT_FRAME is a mild Grade-B review signal.
+3. TRUE_DUPLICATE_SUSPECT is reserved for same-raw reuse or extreme similarity far
+   apart in run/span/chainage space.
+4. Numerical missing-span checks are validated against reference_spans.csv.
+5. Calibration trust is graded A / B / REVIEW.
+6. The script automatically reuses the v0.1 DINO cache when
+   D:\Sev\Obliques\DH1\_audit_manual_163_v01\qa\visual_continuity\feature_cache exists.
+
+Recommended run
+---------------
+& "D:\Sev\Obliques\NYPA\.venv-v07\Scripts\python.exe" `
+  "D:\Sev\Obliques\DH1\audit_manual_163_v02.py" `
+  "D:\Sev\Obliques\DH1"
+
+You should normally see something similar to:
+  seeded ... feature-cache files from ...
+  features=400/400 ... cached=400 computed=0
+
+If automatic cache reuse cannot find the previous cache:
+---------------------------------------------------------
+& "D:\Sev\Obliques\NYPA\.venv-v07\Scripts\python.exe" `
+  "D:\Sev\Obliques\DH1\audit_manual_163_v02.py" `
+  "D:\Sev\Obliques\DH1" `
+  --reuse-cache-from "D:\Sev\Obliques\DH1\_audit_manual_163_v01\qa\visual_continuity\feature_cache"
+
+Main outputs
+------------
+D:\Sev\Obliques\DH1\_audit_manual_163_v02\
+  audit_summary.json
+  audit_summary.csv
+  manual_image_audit.csv
+  geometry_run_transitions.csv
+  span_continuity.csv
+  missing_manual_spans.csv
+  high_similarity_pairs.csv
+  duplicate_candidates.csv
+  redundant_frame_candidates.csv
+  label_suspects.csv
+  trusted_manual_grade_A.csv
+  calibration_pool_A_B.csv
+  trusted_manual_subset.csv
+  dino_feature_index.csv
+  review_manifest.csv
+  report.html
+  review\
+
+Calibration grades
+------------------
+A       High/medium raw match + normal pass + auditable geometry + no material flags.
+B       Independently auditable, but with only mild QA flags.
+REVIEW  Source mapping uncertain, geometry insufficient, wrong-pass/sequence/label
+        concern, or strong duplicate suspicion.
+
+No image is deleted or relabelled automatically.

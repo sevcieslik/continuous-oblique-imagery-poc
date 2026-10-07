@@ -1,0 +1,4 @@
+filename,pass_direction,circuit_run_id,reference_chainage,primary_span,reference_assignment_status,reference_confidence,alternative_reference,sequence_in_run,product_direction,generated_filename,render_status
+IMG_0001.jpg,BACKWARD_PASS,EX_BACKWARD_R01,10020.0,10-11,ASSIGNED,HIGH,,1,BACKWARD,EX_10-11_1_010126_v1.jpg,RENDERED
+IMG_0002.jpg,BACKWARD_PASS,EX_BACKWARD_R01,9270.0,9-10,BOUNDARY_AMBIGUOUS,AMBIGUOUS,10-11,2,BACKWARD,EX_9-10_2_010126_v1.jpg,RENDERED
+IMG_0003.jpg,BACKWARD_PASS,EX_BACKWARD_R01,8520.0,8-9,ASSIGNED,HIGH,,3,BACKWARD,EX_8-9_3_010126_v1.jpg,RENDERED

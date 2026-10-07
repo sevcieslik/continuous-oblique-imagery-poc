@@ -1,0 +1,72 @@
+Continuous Oblique Imagery POC v0.4
+===================================
+
+Purpose
+-------
+v0.4 keeps the v0.3 geometry/EO/OPK/coverage logic and fixes the structure/span
+reference topology. Physical PLS staking rows are no longer assumed to be the
+same thing as product structure numbers.
+
+For NYPA DH1, the PLS structure_name field contains .tow ordinal tokens (#N).
+The default --reference-topology auto mode uses those ordinals only when they
+form a contiguous monotonic reference sequence. Duplicate ordinals are retained
+in the physical PLS topology but only the last occurrence is used as the
+canonical product/reference structure.
+
+Run
+---
+cd D:\Sev\Obliques\NYPA
+
+python -m pip install -r requirements_continuous_oblique_v04.txt
+
+python .\continuous_oblique_v04.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1
+
+Output
+------
+D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v04
+
+Key new outputs
+---------------
+reference_topology.csv
+    All physical PLS structures plus tow_ordinal_candidate, reference_idx,
+    is_reference_structure, duplicate count and selection reason.
+
+pls_spans.csv
+    Raw physical PLS spans.
+
+reference_spans.csv
+    Product/reference spans. A reference span can include one or more physical
+    PLS spans when intermediate staking rows are not product structures.
+
+continuous_oblique_poc_v04.gpkg
+    Adds layers reference_structures and pls_spans. The existing spans layer is
+    now the product/reference span topology.
+
+What to check in terminal
+-------------------------
+The NYPA DH1 run should report the reference-topology status. Based on the v0.3
+benchmark, we expect the #N topology to identify the intermediate staking rows
+around the 115/116 transition rather than treating all 303 PLS rows as product
+structures.
+
+For comparison only, the old v0.3-style behaviour can be forced with:
+
+python .\continuous_oblique_v04.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --reference-topology identity `
+  --output "D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v04_identity"
+
+Please return
+-------------
+summary.json
+reference_topology.csv
+reference_spans.csv
+existing_163_benchmark.csv
+opk_benchmark.csv
+direction_gaps.csv
+gap_events.csv
+
+No source imagery is modified.

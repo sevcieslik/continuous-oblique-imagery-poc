@@ -1,0 +1,142 @@
+Continuous Oblique POC v0.7 - DINOv3 visual continuity QA
+============================================================
+
+What changed from v0.6.1
+------------------------
+- Keeps every legal continuous-sequence image. DINOv3 is QA-only and NEVER removes images.
+- Span visibility remains metadata only (FULL_SPAN / PARTIAL_SPAN / etc.).
+- Adds DINOv3 global + dense patch feature comparison between adjacent logical circuit images.
+- Combines visual evidence with the existing geometry transition status.
+- Creates visual_transitions.csv and contact sheets for non-OK transitions.
+- Existing 163 is benchmark-only. Capture date is now inferred from raw EXIF or supplied with --capture-date.
+
+DINOv3 model access
+-------------------
+The default model is:
+  facebook/dinov3-vits16-pretrain-lvd1689m
+
+The official Meta DINOv3 Hugging Face checkpoints are gated. Before the first run:
+1. Sign in to Hugging Face and accept the DINOv3 model licence for the model above.
+2. Authenticate this Windows environment:
+
+   hf auth login
+
+Alternatively set HF_TOKEN or pass a local model directory with --dino-model.
+The first successful run downloads the model. Later runs can use the local HF cache.
+
+Install / update dependencies
+-----------------------------
+cd D:\Sev\Obliques\NYPA
+python -m pip install -r requirements_continuous_oblique_v07.txt
+
+Recommended first smoke test
+----------------------------
+The current DH1 NY_W source set is the 22-Apr-2026 acquisition, so supply the date explicitly.
+This avoids borrowing any date from the existing 163 benchmark.
+
+python .\continuous_oblique_v07.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --capture-date 042226 `
+  --render-limit 10 `
+  --dino-max-transitions 25 `
+  --visual-review-limit 25 `
+  --output "D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v07_smoke"
+
+Full DINO continuity run
+------------------------
+Omit --dino-max-transitions to analyse every logical transition.
+You can avoid re-rendering the whole candidate product while still running DINO and review contact sheets:
+
+python .\continuous_oblique_v07.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --capture-date 042226 `
+  --render-mode none `
+  --skip-structure-crops `
+  --visual-review-limit 100 `
+  --output "D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v07"
+
+GPU / CPU
+---------
+Default: --dino-device auto
+- If CUDA PyTorch is available, v0.7 uses CUDA.
+- Otherwise it runs on CPU.
+
+Examples:
+  --dino-device cuda
+  --dino-device cuda:0
+  --dino-device cpu
+
+If GPU memory is tight:
+  --dino-batch-size 1
+
+If you want denser local features later:
+  --dino-image-size 448
+The default 224 is intentionally conservative for the first validation run.
+
+Outputs added in v0.7
+---------------------
+visual_transitions.csv
+product_visual_transitions.csv
+  Same legal continuous sequence in v0.7; includes geometry + DINO metrics:
+  - global_similarity
+  - dense_best_mean
+  - mutual_match_count / ratio
+  - spatial_coherence
+  - visual_score
+  - visual_robust_z
+  - visual_status
+  - review_reason
+
+dino_feature_index.csv
+  Feature extraction/cache status per source image used by DINO.
+
+visual_review_manifest.csv
+  Contact-sheet rendering status.
+
+qa\visual_continuity\
+  feature_cache\   cached DINO features
+  review\          geometry/visual disagreements or weak transitions
+  gap\             possible visual gaps
+  duplicate\       possible near-duplicate frames
+
+Visual statuses
+---------------
+CONTINUOUS
+  Geometry and DINO are consistent.
+
+GEOMETRY_OK_VISUAL_WEAK
+  Geometry says the pair should continue, but DINO is a strong visual outlier. Review it.
+
+GEOMETRY_WEAK_VISUAL_OK
+  Geometry/footprint evidence is weak, but DINO sees normal visual continuity. Often metadata QA.
+
+POSSIBLE_GAP
+  Geometry and DINO both indicate a break.
+
+WEAK_VISUAL_OVERLAP
+  DINO score is below the normal distribution for that circuit run.
+
+VIEW_CHANGE
+  Usually a bridge between flight-pass fragments with weaker visual continuity.
+
+POSSIBLE_DUPLICATE
+  Extremely high global and dense DINO similarity. This is a QA flag only; the image is not removed.
+
+Important membership rule
+-------------------------
+DINOv3, span visibility and duplicate detection are QA signals only.
+They do not change sequence_keep.
+Images are excluded only by the geometric/acquisition membership logic, such as side/crossing/additional-flight/outside-AOI imagery.
+
+Capture date
+------------
+v0.7 no longer takes capture date from the existing 163 benchmark.
+Order of precedence:
+1. --capture-date MMDDYY
+2. raw image EXIF date
+3. EO-source mode of available raw EXIF dates
+4. 000000 if no independent date is available
+
+For this DH1 source run use --capture-date 042226.

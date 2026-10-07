@@ -1,0 +1,26 @@
+Run from PowerShell:
+
+python .\adjudicate_manual_vs_ai_v01.py "D:\Sev\Obliques\DH1"
+
+or with your working venv:
+
+& "D:\Sev\Obliques\NYPA\.venv-v07\Scripts\python.exe" `
+  "D:\Sev\Obliques\DH1\adjudicate_manual_vs_ai_v01.py" `
+  "D:\Sev\Obliques\DH1"
+
+No DINO inference is rerun. The script reuses the DINO/geometry evidence already written by
+_audit_manual_163_v03.
+
+Expected output:
+D:\Sev\Obliques\DH1\_adjudication_manual_vs_ai_v01\
+  adjudication_summary.json
+  adjudication_summary.csv
+  span_disagreements.csv
+  wrong_pass_cases.csv
+  human_review_template.csv
+  report.html
+  review\
+    span_disagreements\
+    wrong_pass\
+
+The script does not alter either the manual or AI product.

@@ -1,0 +1,164 @@
+Continuous Oblique POC v0.6
+===========================
+
+Purpose
+-------
+v0.6 adds a span-completeness gate before an image is written to the final
+163_candidate folder. A geometry-valid image can remain useful for sequence QA
+and structure crops but is excluded from the final 163 candidate when there is
+not enough evidence for two consecutive reference structure stations (i.e. no
+complete visible span).
+
+The gate is intentionally separate from primary-span labelling. It does not
+change the OPK label just to fit the visibility test.
+
+Install
+-------
+cd D:\Sev\Obliques\NYPA
+python -m pip install -r requirements_continuous_oblique_v06.txt
+
+Recommended DH1 smoke test
+--------------------------
+python .\continuous_oblique_v06.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --render-limit 10 `
+  --output "D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v06_smoke"
+
+Because --span-review-limit is omitted above, v0.6 automatically reuses
+--render-limit=10 for the pre-filter PASS/FAIL review.
+
+For the ten DH1 frames reviewed in chat, the expected span-view result with the
+default thresholds is:
+
+PASS
+  DH1_234-235_1_042226_v1.jpg
+  DH1_233-234_2_042226_v1.jpg
+  DH1_232-233_3_042226_v1.jpg
+  DH1_229-230_7_042226_v1.jpg
+  DH1_228-229_8_042226_v1.jpg
+  DH1_227-228_9_042226_v1.jpg
+
+FAIL
+  DH1_231-232_4_042226_v1.jpg   SINGLE_STRUCTURE_GROUP
+  DH1_231-232_5_042226_v1.jpg   SINGLE_STRUCTURE_GROUP
+  DH1_230-231_6_042226_v1.jpg   STRUCTURE_NEAR_EDGE
+  DH1_227-228_10_042226_v1.jpg  SINGLE_STRUCTURE_GROUP
+
+Review folders
+--------------
+_continuous_oblique_poc_v06_smoke\qa\span_completeness\pass
+_continuous_oblique_poc_v06_smoke\qa\span_completeness\fail
+
+These QA previews are taken from the pre-filter sequence. The final
+163_candidate folder contains only span-complete frames.
+
+Important outputs
+-----------------
+span_completeness.csv
+  One row per geometry-valid sequence image, with:
+  span_view_status
+  span_view_confidence
+  span_view_pair
+  span_view_evidence
+  valid_for_163
+  sequence_only_image
+
+product_manifest.csv
+  Final 163 candidate only. Incomplete span views are absent.
+
+span_review_manifest.csv
+  PASS/FAIL smoke-review subset when a review limit is supplied.
+
+image_index.csv
+  All raw images and all geometry/span QA fields. Rejected span views are still
+  retained here.
+
+direction_coverage.csv
+  Source/sequence coverage using geometry-valid frames.
+
+direction_coverage_163.csv
+  Coverage after the final span-completeness filter.
+
+163_candidate\
+  Final accepted annotated candidate product.
+
+structure_crops\
+  Structure crops remain available even from sequence-only frames, because an
+  image can be useful for a structure crop even if it is not a valid complete
+  span image.
+
+How the v0.6 span test works
+----------------------------
+For every geometry-valid image, v0.6 compares the 1D circuit coverage interval
+with the canonical reference-structure chainages.
+
+A final 163 image must show evidence for two consecutive reference stations.
+Each station is classified as:
+
+SAFE_INSIDE
+  Inside the image coverage and sufficiently clear of the along-circuit edge.
+
+NEAR_EDGE_INSIDE
+  Inside the footprint but too close to the along-circuit edge to rely on the
+  complete structure group being visible.
+
+TOLERATED_OUTSIDE
+  Just outside the delivered footprint by a small configurable amount. This is
+  allowed because the DH1 smoke review shows the DXF footprint can slightly
+  understate useful image content at an edge.
+
+A span passes when there is a consecutive reference pair made from
+SAFE_INSIDE/TOLERATED_OUTSIDE evidence and at least one endpoint is SAFE_INSIDE.
+A pair containing NEAR_EDGE_INSIDE does not pass.
+
+Default DH1 thresholds
+----------------------
+--span-visibility-outside-tolerance 100
+--span-visibility-edge-margin 100
+
+EPSG:2262 uses US survey feet, so these defaults are 100 ft. Metric projects use
+30 m defaults.
+
+The thresholds are explicit CLI settings, not hard-coded business truth. They
+can be tuned after more visual QA.
+
+Full run after smoke QA
+-----------------------
+python .\continuous_oblique_v06.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1
+
+Useful comparison / tuning examples
+-----------------------------------
+Render 20 pre-filter PASS/FAIL reviews while only rendering 10 final candidates:
+
+python .\continuous_oblique_v06.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --render-limit 10 `
+  --span-review-limit 20
+
+Change edge/tolerance thresholds:
+
+python .\continuous_oblique_v06.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --span-visibility-outside-tolerance 80 `
+  --span-visibility-edge-margin 120
+
+Classify but temporarily do not filter incomplete span views:
+
+python .\continuous_oblique_v06.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --disable-span-completeness-filter
+
+Notes
+-----
+- Source imagery is never modified.
+- The v0.6 span-completeness rule is a geometry/footprint proxy, not pixel-level
+  tower object detection.
+- Geometry-valid images rejected from final 163 remain available for sequence QA.
+- OPK primary-span attribution remains unchanged from v0.5.
+- DINO is still not used in v0.6.

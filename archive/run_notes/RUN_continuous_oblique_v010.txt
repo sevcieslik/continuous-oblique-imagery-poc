@@ -1,0 +1,110 @@
+Continuous Oblique POC v0.10
+=============================
+
+Purpose
+-------
+v0.10 keeps the validated continuous-sequence logic unchanged and replaces pixel-accurate
+structure projection with a visual structure detector.
+
+The crop workflow is now:
+  broad geometry/LiDAR prior -> broad ROI -> OWL-ViT zero-shot tower detection
+  -> optional DINOv3 tracking of the same structure across overlapping images
+  -> visual detection bbox -> final crop
+
+Important:
+- The detector/DINO NEVER changes sequence_keep or removes an image from product 163.
+- Geometry is used only as a broad search prior for structure crops.
+- If no tower is detected, no structure crop is saved. The row is marked NO_VISUAL_DETECTION.
+- Existing 163 remains benchmark-only.
+
+Recommended environment
+-----------------------
+Use the working venv where torch 2.6.0+cpu and torchvision 0.21.0+cpu load successfully:
+
+  cd D:\Sev\Obliques\NYPA
+  .\.venv-v07\Scripts\Activate.ps1
+
+If required:
+
+  python -m pip install -r requirements_continuous_oblique_v010.txt
+
+The first v0.10 run downloads google/owlvit-base-patch32 (~613 MB). It is a public
+Hugging Face model and does not require a gated access request.
+
+DINOv3 access is already required only for the optional local tracker. If you want to
+isolate the detector first, add --skip-tower-dino.
+
+Recommended first smoke test
+----------------------------
+This skips the already-tested DINO continuity QA, but keeps DINO local tower tracking enabled:
+
+python .\continuous_oblique_v010.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --capture-date 042226 `
+  --render-limit 10 `
+  --crop-qa-limit 20 `
+  --skip-dino `
+  --output "D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v010_smoke"
+
+If you want detector-only structure QA first:
+
+python .\continuous_oblique_v010.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --capture-date 042226 `
+  --render-limit 10 `
+  --crop-qa-limit 20 `
+  --skip-dino `
+  --skip-tower-dino `
+  --output "D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v010_detector_only"
+
+Useful detector controls
+------------------------
+--tower-detector-model google/owlvit-base-patch32
+--tower-detection-threshold 0.05
+--tower-roi-fraction 0.55
+--tower-nms-iou 0.45
+--tower-max-boxes 12
+--tower-prompts "electricity pylon|transmission tower|power transmission tower|lattice tower|high voltage pylon"
+--skip-tower-dino
+
+If towers are missed:
+- first lower --tower-detection-threshold, e.g. 0.03
+- or increase --tower-roi-fraction, e.g. 0.70
+The code also automatically expands the ROI and finally tries the full image before
+returning NO_VISUAL_DETECTION.
+
+QA outputs
+----------
+qa\structure_detection\
+  Cyan rectangle: geometry-seeded detector search area
+  White cross: rough geometry prior
+  Magenta boxes: all retained tower detections
+  Green box: selected tower detection
+  White box: final saved crop
+
+structure_crop_candidates.csv adds:
+  tower_detector_status
+  tower_detector_model
+  tower_detector_score
+  tower_detector_final_score
+  tower_detector_label
+  tower_detection_count
+  tower_search_mode
+  tower_search_xmin/ymin/xmax/ymax
+  geometry_prior_x_px / geometry_prior_y_px
+  geometry_prior_distance_px
+  tower_dino_similarity
+  tower_refine_status
+  tower_box_xmin/ymin/xmax/ymax
+
+Expected statuses
+-----------------
+OK_VISUAL_DETECTION   -> visual tower was found and crop saved
+NO_VISUAL_DETECTION   -> fail closed; no crop saved
+DETECTOR_ERROR        -> model/runtime failure
+DETECTOR_LOAD_FAILED  -> detector could not load
+DETECTION_BOX_FAILED  -> invalid visual bbox
+
+The main product-membership fields are unchanged from v0.6.1/v0.7.

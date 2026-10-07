@@ -1,0 +1,58 @@
+Manual 163 audit v0.3
+
+Why v0.3
+--------
+v0.2 showed 95 TRUE_DUPLICATE_SUSPECT pairs, but inspection of duplicate_candidates.csv
+showed that all 95 were being triggered by the same matched_raw_filename. That is not
+sufficient evidence when either manual-final -> raw match is LOW/unresolved.
+
+v0.3 changes the logic:
+- same raw filename only counts as literal reuse when BOTH source matches are HIGH/MEDIUM;
+- LOW/unresolved same-raw collisions become RAW_MAPPING_COLLISION_UNTRUSTED and do not
+  reduce calibration trust;
+- HIGH/MEDIUM same-raw reuse in a local sequence becomes POSSIBLE_REDUNDANT_FRAME (Grade B),
+  not a strong duplicate error;
+- HIGH/MEDIUM same-raw reuse far apart in span/run space remains TRUE_DUPLICATE_SUSPECT;
+- different raw frames can still become TRUE_DUPLICATE_SUSPECT when DINO itself is
+  extremely similar far apart;
+- local high DINO similarity is learned relative to the product and reported as
+  EXPECTED_HIGH_OVERLAP. This is neutral evidence.
+
+The 9 missing manual spans remain checked against reference topology.
+
+Recommended run
+---------------
+& "D:\Sev\Obliques\NYPA\.venv-v07\Scripts\python.exe" `
+  "D:\Sev\Obliques\DH1\audit_manual_163_v03.py" `
+  "D:\Sev\Obliques\DH1"
+
+v0.3 automatically reuses the DINO cache from v0.2 first, then v0.1.
+You should normally see:
+  seeded 400 feature-cache files from ..._audit_manual_163_v02...
+  features=400/400 ... cached=400 computed=0
+
+Main outputs
+------------
+D:\Sev\Obliques\DH1\_audit_manual_163_v03\
+  audit_summary.json
+  audit_summary.csv
+  manual_image_audit.csv
+  geometry_run_transitions.csv
+  span_continuity.csv
+  missing_manual_spans.csv
+  high_similarity_pairs.csv
+  expected_high_overlap_pairs.csv
+  redundant_frame_candidates.csv
+  duplicate_candidates.csv
+  raw_mapping_collisions.csv
+  label_suspects.csv
+  trusted_manual_grade_A.csv
+  calibration_pool_A_B.csv
+  trusted_manual_subset.csv
+  report.html
+
+Important
+---------
+No manual image is deleted, renamed or relabelled.
+RAW_MAPPING_COLLISION_UNTRUSTED is a weakness in the manual-final -> raw benchmark,
+not evidence that the manual 163 image itself is wrong.

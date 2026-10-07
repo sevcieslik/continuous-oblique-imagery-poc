@@ -1,0 +1,5 @@
+filename,eo_order,camera_chainage,distance_to_alignment,pass_id,pass_direction,coverage_from,coverage_to,primary_span,reference_id,view_direction,valid_for_product,rejection_reason
+IMG_0001.jpg,101,10000.0,18.2,FLIGHT_P03,BACKWARD_PASS,9500.0,10400.0,10-11,10-11,BACKWARD,True,
+IMG_0002.jpg,102,9250.0,15.7,FLIGHT_P03,BACKWARD_PASS,8750.0,9650.0,9-10,9-10,BACKWARD,True,
+IMG_0003.jpg,103,8500.0,14.9,FLIGHT_P03,BACKWARD_PASS,8000.0,8900.0,8-9,8-9,BACKWARD,True,
+IMG_0200.jpg,220,5000.0,35.0,FLIGHT_P07,CROSSING_PASS,4700.0,5250.0,5-6,5-6,SIDE,False,CROSSING_PASS

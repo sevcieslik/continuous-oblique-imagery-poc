@@ -1,0 +1,27 @@
+Continuous Oblique POC v0.12
+
+1) Activate the same venv used for v0.11.
+
+2) Verify the detector dependencies:
+python -c "import torch,torchvision,transformers; print('torch',torch.__version__); print('torchvision',torchvision.__version__); print('transformers',transformers.__version__)"
+
+3) Direct Grounding DINO load probe:
+python -c "from transformers import AutoProcessor,AutoModelForZeroShotObjectDetection; m='IDEA-Research/grounding-dino-tiny'; print('processor...'); p=AutoProcessor.from_pretrained(m); print('model...'); q=AutoModelForZeroShotObjectDetection.from_pretrained(m); print(type(q).__name__)"
+
+4) Smoke test.  For this NYPA dataset class 215 is the plausible structure class from the v0.11 profile, so pin it for the smoke test:
+python .\continuous_oblique_v012.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --capture-date 042226 `
+  --structure-class 215 `
+  --render-limit 3 `
+  --crop-qa-limit 12 `
+  --skip-dino `
+  --skip-tower-dino `
+  --output "D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v012_detector_smoke"
+
+v0.12 changes:
+- prints the full tower-detector load error immediately;
+- writes qa\structure_detection\DETECTOR_LOAD_FAILED.txt when detector loading fails;
+- attempts the Transformers pipeline fallback if direct Grounding DINO loading fails;
+- makes automatic LiDAR structure-class selection reject implausibly tall/sparse classes.

@@ -1,0 +1,110 @@
+Continuous Oblique Imagery POC v0.9
+===================================
+
+Purpose
+-------
+v0.9 keeps the validated continuous-sequence / span-label / DINO QA logic from v0.7-v0.8,
+but replaces approximate structure cropping with LiDAR-driven 3-D projection.
+
+Structure crop model
+--------------------
+1. Index LAS/LAZ tile headers lazily.
+2. Ground class defaults to LAS class 2.
+3. Structure class defaults to AUTO. The script samples reference structures and ranks
+   non-ground classes by repeatability, height, vertical range and proximity to staking XY.
+4. For each source image, the four DXF footprint corners are assigned ground Z from LiDAR.
+5. EO XYZ + OPK + 3-D footprint corners are used to estimate an effective image camera model.
+6. Structure-class LiDAR points near the staking XY are projected directly into the source JPG.
+7. The structure crop is the robust bounding box of those projected LiDAR points plus padding.
+8. QA images show the crop box and projected LiDAR points over the full source image.
+
+No source imagery or LiDAR is modified.
+
+Recommended first run
+---------------------
+Activate the same venv used for v0.7:
+
+  cd D:\Sev\Obliques\NYPA
+  .\.venv-v07\Scripts\Activate.ps1
+
+Install the new dependency if needed:
+
+  python -m pip install laspy
+
+Then run a crop-only smoke test:
+
+  python .\continuous_oblique_v09.py `
+    "D:\Sev\Obliques\NYPA" `
+    --circuit DH1 `
+    --capture-date 042226 `
+    --render-limit 10 `
+    --crop-qa-limit 20 `
+    --skip-dino `
+    --output "D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v09_smoke"
+
+Important terminal output
+-------------------------
+v0.9 prints the selected LiDAR structure class and the top five class candidates, e.g.:
+
+  LiDAR tiles: ...  ground_class=2  structure_class=15 (AUTO_PROFILE)
+  Top class candidates:
+    class 15: coverage=... median_height=... vertical_range=... score=...
+
+If AUTO clearly picks a conductor/vegetation class instead of the tower/structure class,
+rerun with an explicit class, for example:
+
+  --structure-class 15
+
+Outputs to review
+-----------------
+  qa\structure_projection\
+      Full-image diagnostics. Yellow dots are projected structure-class LiDAR points.
+      White rectangle is the crop generated from their projected bounding box.
+
+  structure_crops\
+      Actual saved crops, grouped by reference structure and direction.
+
+  structure_crop_candidates.csv
+      Includes:
+      - lidar_ground_class
+      - lidar_structure_class
+      - lidar_ground_z
+      - lidar_structure_base_z / top_z / height
+      - lidar_structure_point_count
+      - camera_reprojection_rms_px / fraction
+      - camera_model_quality
+      - projected_point_count
+      - projected_bbox_*
+      - crop_projection_status
+
+Main statuses
+-------------
+  OK_LIDAR_3D                  crop created from projected structure LiDAR points
+  NO_STRUCTURE_CLASS           auto-selection failed; specify --structure-class
+  NO_STRUCTURE_POINTS          chosen class has no points near this staking structure
+  INSUFFICIENT_STRUCTURE_POINTS
+  CAMERA_MODEL_FAILED          EO/footprint/LiDAR ground could not form a camera model
+  CAMERA_RMSE_HIGH             camera fit did not meet --camera-max-rmse-fraction
+  NO_PROJECTED_STRUCTURE_POINTS
+  PROJECTED_BBOX_FAILED
+
+Useful options
+--------------
+  --ground-class 2
+  --structure-class auto
+  --lidar-structure-radius 55
+  --lidar-ground-radius 75
+  --lidar-class-sample-structures 30
+  --lidar-min-structure-height 15
+  --camera-max-rmse-fraction 0.03
+  --lidar-max-projected-points 4000
+  --crop-padding-factor 1.0
+  --crop-min-size 800
+
+Notes
+-----
+- Values are in the working project units. DH1 is EPSG:2262 / US survey feet.
+- AUTO structure-class selection is a POC heuristic, not a hidden production rule.
+- v0.9 does not explicitly model lens distortion. Reprojection RMS is reported so images
+  with a poor effective camera model are flagged rather than silently cropped.
+- DINO remains QA-only and never changes sequence membership.

@@ -1,0 +1,69 @@
+Continuous Oblique Imagery POC v0.2
+===================================
+
+1. Put these files in the NYPA project root (or any working folder):
+   continuous_oblique_v02.py
+   requirements_continuous_oblique_v02.txt
+
+2. Install/update dependencies:
+
+   python -m pip install -r requirements_continuous_oblique_v02.txt
+
+3. Run on NYPA:
+
+   python .\continuous_oblique_v02.py `
+     "D:\Sev\Obliques\NYPA" `
+     --circuit DH1
+
+Default output:
+
+   D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v02
+
+Main new v0.2 outputs:
+
+   continuous_oblique_poc_v02.gpkg
+   circuit_runs.csv
+   transitions.csv                 product/run-level transitions
+   flight_transitions.csv          raw flight-pass transitions
+   run_internal_gaps.csv           gaps only inside each logical circuit run
+   direction_coverage.csv          full-circuit FORWARD/BACKWARD coverage
+   direction_gaps.csv              full-circuit gaps per direction
+   span_benchmark.csv              aggregate generated vs existing 163 span counts
+   existing_163_benchmark.csv       image-level benchmark where source matching succeeds
+   image_index.csv
+   summary.json
+
+Important:
+- v0.2 still does not modify, rename, copy or delete source imagery.
+- Flight pass and circuit run are separate concepts.
+- SIDE/CROSSING images remain indexed but are not product candidates unless --allow-side is used.
+- Full-circuit gap QA is calculated separately for FORWARD and BACKWARD.
+- The appearance benchmark is not DINO. It is only used to identify which raw JPG an existing 163 JPG came from so that existing span labels can be compared with geometry.
+
+Optional switches:
+
+   --run-stitch-gap 4500
+       Override the automatic circuit-run stitch threshold.
+       Default = 3 x median geometric image coverage length.
+
+   --skip-image-benchmark
+       Skip reading existing/raw JPG pixels. Useful for a fast geometry-only run.
+
+   --reference-mode structure
+       Use structure as the primary reference entity rather than span.
+
+   --allow-side
+       Allow SIDE-view images as candidates. Default is to reject them from product candidacy.
+
+Recommended first run:
+
+   python .\continuous_oblique_v02.py `
+     "D:\Sev\Obliques\NYPA" `
+     --circuit DH1
+
+If the image-level benchmark is slow, run once with:
+
+   python .\continuous_oblique_v02.py `
+     "D:\Sev\Obliques\NYPA" `
+     --circuit DH1 `
+     --skip-image-benchmark

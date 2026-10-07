@@ -1,0 +1,21 @@
+Continuous Oblique Imagery POC v0.9.1
+
+Bugfix release of v0.9. Restores helper functions accidentally omitted from the generated v0.9 script and fixes product-image annotation in the v0.9 renderer. LiDAR 3-D projection logic is unchanged.
+
+From PowerShell in D:\Sev\Obliques\NYPA with .venv-v07 active:
+
+python .\continuous_oblique_v091.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --capture-date 042226 `
+  --render-limit 10 `
+  --crop-qa-limit 20 `
+  --skip-dino `
+  --output "D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v091_smoke"
+
+For this test, inspect:
+  qa\structure_projection\
+  structure_crop_candidates.csv
+  summary.json
+
+DINO is deliberately skipped. This run is only validating LiDAR-driven 3-D structure projection and crop generation.

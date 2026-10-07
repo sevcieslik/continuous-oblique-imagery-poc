@@ -1,0 +1,16 @@
+EXAMPLE_PROJECT/
+├── 30_classified_tiled_point_cloud/
+│   └── v1/
+│       └── tiles/*.las
+├── 40_pls_cadd_staking_table/
+│   └── v1/
+│       └── CIRCUIT_STAKING.xml
+├── 130_raw_overlapping_oblique_imagery/
+│   └── v1/
+│       └── IMG_0001.jpg ...
+├── 163_continuous_oblique_imagery/
+│   └── v1/                       # optional manual benchmark
+├── 277_camera_eo/
+│   └── v1/
+│       └── FLIGHT_EO.txt
+└── circuit_footprints.dxf

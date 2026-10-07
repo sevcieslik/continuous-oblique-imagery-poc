@@ -1,0 +1,65 @@
+continuous_oblique_v061.py
+
+Purpose
+-------
+v0.6.1 corrects the v0.6 membership logic. Span visibility is QA metadata only.
+A legal continuous-oblique image is kept even when it shows only part of a span,
+one structure group, or no structure group. Images are excluded only by the
+existing sequence-membership rules such as crossing/side/additional-flight/outside-AOI.
+
+Smoke test
+----------
+python .\continuous_oblique_v061.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --render-limit 10 `
+  --output "D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v061_smoke"
+
+Expected behaviour on the previously reviewed first 10 frames
+--------------------------------------------------------------
+- all 10 legal sequence frames remain in 163_candidate
+- span-visibility QA should classify roughly 6 FULL and 4 PARTIAL
+- the four previously called FAIL are now kept, not removed
+- qa\span_completeness uses full_span and partial_span folders
+- continuous-product coverage should equal legal sequence coverage, not the old
+  span-complete-only 67.92% figure
+
+Important fields
+----------------
+sequence_keep             Product membership. This controls whether the image stays.
+valid_for_163              Compatibility alias for sequence_keep in v0.6.1.
+reference_id               Label written to the image.
+reference_confidence       Confidence in that label.
+alternative_reference      Adjacent reference when boundary-ambiguous.
+span_visibility_class      FULL_SPAN / PARTIAL_SPAN / SINGLE_STRUCTURE /
+                           NO_STRUCTURE_VISIBLE / NOT_APPLICABLE.
+full_span_visible          QA boolean only. Never used to remove a legal frame.
+span_view_status           Detailed geometry evidence status.
+
+Full run
+--------
+python .\continuous_oblique_v061.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1
+
+Main outputs
+------------
+_continuous_oblique_poc_v061\
+  163_candidate\                 all legal continuous-sequence frames
+  qa\span_completeness\
+    full_span\                    full two-endpoint span evidence
+    partial_span\                 still kept; incomplete span visibility
+  product_manifest.csv
+  span_completeness.csv
+  span_review_manifest.csv
+  direction_coverage.csv
+  direction_coverage_163.csv       compatibility output; should match legal sequence coverage
+  direction_gaps.csv
+  continuous_oblique_poc_v061.gpkg
+  summary.json
+
+Notes
+-----
+Do not use span visibility to prune the sequence. A partial-frame bridge may be
+exactly what makes the product continuous. DINO/visual continuity can be added in
+the next phase to evaluate adjacent legal frames without deleting them automatically.

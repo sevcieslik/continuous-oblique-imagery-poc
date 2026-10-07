@@ -1,0 +1,81 @@
+Continuous Oblique Imagery POC v0.8
+===================================
+
+Purpose of v0.8
+---------------
+Keep the validated continuous-sequence logic from v0.7 and replace the weak structure-crop projection with a footprint-constrained homography model.
+
+Important product rule
+----------------------
+Span visibility is QA metadata only. Images are NOT removed because a complete span or both structures are not visible.
+Sequence membership is still decided by circuit-run geometry / pass direction / AOI logic. DINO remains QA-only.
+
+Structure-crop model
+--------------------
+1. The four DXF footprint vertices are associated with image TL/TR/BR/BL using EO OPK.
+2. A projective homography maps ground XY directly to image pixels.
+3. Structure base XY is projected through the homography.
+4. Structure top is projected by extending the camera->top ray to the local base-Z plane, then mapping that ground intercept through the same homography.
+5. If homography construction fails, v0.7 approximate OPK/FOV projection remains as an explicit fallback.
+
+This is footprint-constrained projection, not a full lens-distortion-aware camera calibration.
+
+Windows / PyTorch
+-----------------
+The tested Windows CPU combination is:
+  torch 2.6.0+cpu
+  torchvision 0.21.0+cpu
+
+If rebuilding the environment, install the CPU wheels explicitly:
+
+  python -m pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cpu
+
+Then install the remaining dependencies as required.
+
+Recommended v0.8 crop smoke test
+--------------------------------
+DINO already passed its smoke test, so skip it while reviewing the new crop projection:
+
+python .\continuous_oblique_v08.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --capture-date 042226 `
+  --render-limit 10 `
+  --crop-qa-limit 20 `
+  --skip-dino `
+  --output "D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v08_smoke"
+
+Review
+------
+1. structure_crops\...
+2. qa\structure_projection\...
+3. structure_crop_candidates.csv
+4. summary.json
+
+The QA images show the full source-image preview with:
+- crop rectangle
+- projected base marker
+- projected top marker / line
+
+Useful fields in structure_crop_candidates.csv
+-----------------------------------------------
+projection_model
+crop_projection_status
+crop_projection_confidence
+footprint_corner_order
+homography_order_score
+homography_condition
+homography_reprojection_px
+base_x_px / base_y_px
+top_x_px / top_y_px
+top_ray_ground_x / top_ray_ground_y
+crop_xmin / crop_ymin / crop_xmax / crop_ymax
+crop_debug_path
+
+Expected primary status:
+  OK_HOMOGRAPHY
+
+Fallback status if footprint homography cannot be solved:
+  OK_APPROX_FALLBACK
+
+No source imagery is modified.

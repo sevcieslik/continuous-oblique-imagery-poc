@@ -1,0 +1,104 @@
+Continuous Oblique POC v0.14
+
+Purpose of v0.14
+----------------
+Keep the validated continuous-163 sequence logic unchanged and tighten only structure-crop detection.
+
+Grounding DINO no longer searches the full source image. For each candidate structure:
+1. LiDAR + EO + footprint camera geometry predicts a source-pixel position.
+2. A local ROI is built around that geometry prior.
+3. Grounding DINO runs only on source-resolution tiles contained inside the union of those local ROIs.
+4. Detections are filtered against both full-image scale and local-ROI scale.
+5. A structure can only use detections whose centres fall inside its own ROI.
+6. The final assignment score gives materially more weight to distance from the predicted structure position.
+7. If no acceptable tower is found, no crop is written for that observation.
+
+No structure-crop failure removes, relabels, or otherwise changes an image in the legal continuous 163 sequence.
+
+IMPORTANT: use the working venv explicitly
+------------------------------------------
+& "D:\Sev\Obliques\NYPA\.venv-v07\Scripts\python.exe" -c "import torch,torchvision,transformers; print('torch',torch.__version__); print('torchvision',torchvision.__version__); print('transformers',transformers.__version__)"
+
+Smoke test
+----------
+& "D:\Sev\Obliques\NYPA\.venv-v07\Scripts\python.exe" .\continuous_oblique_v014.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --capture-date 042226 `
+  --structure-class 215 `
+  --render-limit 3 `
+  --crop-qa-limit 12 `
+  --skip-dino `
+  --skip-tower-dino `
+  --output "D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v014_detector_smoke"
+
+Default v0.14 local-ROI controls
+--------------------------------
+--tower-roi-radius-fraction 0.16
+--tower-roi-min-radius 1400
+--tower-roi-max-radius 3400
+--tower-gate-fraction 0.30
+
+Detector plausibility controls
+------------------------------
+--tower-prompts "steel lattice electricity transmission tower|steel lattice transmission tower|steel lattice transmission pylon|high voltage lattice pylon"
+--tower-min-aspect 0.18
+--tower-max-aspect 3.5
+--tower-max-area-fraction 0.04
+--tower-max-width-fraction 0.16
+--tower-max-height-fraction 0.30
+--tower-max-roi-area-fraction 0.35
+--tower-max-roi-width-fraction 0.85
+--tower-max-roi-height-fraction 0.95
+--tower-min-assignment-score 0.24
+
+QA colours
+----------
+Cyan rectangle : local geometry-derived detector ROI. Grounding DINO does not see pixels outside it.
+White cross    : geometry prior for the target structure.
+Dim magenta    : raw Grounding DINO detections inside this structure ROI.
+Bright magenta : detections that passed plausibility filtering.
+Blue/cyan circle: local geometry-association gate around the structure prior.
+Orange box     : source-resolution detector tile that produced the selected detection.
+Green box      : selected visual tower detection assigned to this structure_id.
+White box      : final crop extent.
+
+Expected status examples
+------------------------
+OK_VISUAL_DETECTION
+NO_PLAUSIBLE_DETECTIONS_IN_ROI
+NO_DETECTION_IN_GEOMETRY_GATE
+NO_GEOMETRY_PRIOR
+NO_VISUAL_DETECTION
+
+What to inspect after the smoke run
+-----------------------------------
+1. qa\structure_detection
+   - there should be no magenta detections outside the cyan ROI for the structure being reviewed;
+   - the green selected box should land on the intended lattice tower;
+   - the white crop should contain the complete structure with useful context.
+
+2. structure_crops
+   - only accepted visual detections are written;
+   - missing detections are allowed and do not affect 163 continuity.
+
+3. Console summary
+   - should report:
+       Tower search mode: LOCAL_GEOMETRY_ROI
+   - product sequence counts should remain consistent with the previous validated run.
+
+Tuning only if required
+-----------------------
+If the correct tower sits just outside the cyan ROI:
+  --tower-roi-radius-fraction 0.20
+or:
+  --tower-roi-max-radius 4200
+
+If the correct tower is inside the ROI but rejected by the local gate:
+  --tower-gate-fraction 0.38
+
+If oversized field/background boxes still survive:
+  --tower-max-roi-area-fraction 0.25
+  --tower-max-roi-width-fraction 0.70
+
+Do not use --tower-allow-no-prior for v0.14. It is retained only for CLI compatibility; v0.14 intentionally has no full-image detector fallback.

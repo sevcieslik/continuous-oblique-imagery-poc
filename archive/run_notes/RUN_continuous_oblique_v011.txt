@@ -1,0 +1,139 @@
+Continuous Oblique POC v0.11
+=============================
+
+Purpose
+-------
+v0.11 leaves the validated continuous-163 sequence logic unchanged and replaces the
+v0.10 whole-ROI detector with source-resolution tiled detection for structure crops.
+
+Structure crop workflow
+-----------------------
+1. Geometry/LiDAR/EO supplies only a weak prior.
+2. The full source JPG is split into overlapping source-pixel tiles.
+3. Grounding DINO detects towers independently on those tiles.
+4. Tile detections are transformed back to full-image coordinates.
+5. Global NMS merges duplicate detections from tile overlap / prompt synonyms.
+6. Multiple structure IDs in one image are assigned to distinct detections.
+7. Optional DINOv3 tracking helps keep the same structure identity between overlapping frames.
+8. A structure crop is written only from a visual detection.
+
+Important
+---------
+- NO_VISUAL_DETECTION does NOT remove an image from product 163.
+- Partial-span/no-structure frames remain in the legal continuous sequence.
+- Existing 163 remains benchmark-only.
+- The old pixel-accurate LiDAR/footprint projection is not trusted as a crop location. It is only a weak prior.
+
+Environment
+-----------
+Use the working environment where torch 2.6.0+cpu and torchvision 0.21.0+cpu import correctly:
+
+  cd D:\Sev\Obliques\NYPA
+  .\.venv-v07\Scripts\Activate.ps1
+
+Install/update requirements if needed:
+
+  python -m pip install -r requirements_continuous_oblique_v011.txt
+
+The default tower detector is:
+  IDEA-Research/grounding-dino-tiny
+
+First detector-only smoke test
+------------------------------
+Start with 3 product images because tiled Grounding DINO on CPU is much heavier than v0.10:
+
+python .\continuous_oblique_v011.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --capture-date 042226 `
+  --render-limit 3 `
+  --crop-qa-limit 12 `
+  --skip-dino `
+  --skip-tower-dino `
+  --output "D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v011_detector_smoke"
+
+If detections look sensible, repeat with 10 images:
+
+python .\continuous_oblique_v011.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --capture-date 042226 `
+  --render-limit 10 `
+  --crop-qa-limit 20 `
+  --skip-dino `
+  --skip-tower-dino `
+  --output "D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v011_detector_10"
+
+Then enable DINOv3 cross-frame tower tracking by removing --skip-tower-dino.
+
+Default tiled detector settings
+-------------------------------
+--tower-detector-model IDEA-Research/grounding-dino-tiny
+--tower-detector-backend auto
+--tower-detection-threshold 0.18
+--tower-text-threshold 0.15
+--tower-tile-size 2304
+--tower-tile-overlap 0.20
+--tower-tile-batch-size 2
+--tower-max-tiles-per-image 64
+--tower-nms-iou 0.40
+--tower-max-boxes 24
+--tower-prompts "electricity transmission tower|steel lattice transmission tower|power transmission pylon|high voltage pylon|utility transmission tower"
+
+If towers are still missed
+--------------------------
+Try a lower box threshold first:
+
+  --tower-detection-threshold 0.12
+
+If the pylon is still too small inside each tile, reduce tile size:
+
+  --tower-tile-size 1792
+
+This increases the number of detector calls but makes each tower larger relative to the model input.
+For full image coverage with smaller tiles you may also need:
+
+  --tower-max-tiles-per-image 96
+
+If detections are noisy
+-----------------------
+Raise:
+
+  --tower-detection-threshold 0.24
+
+DINOv3 tracking is intentionally disabled in the first smoke test so detector quality can be judged separately.
+
+QA output
+---------
+qa\structure_detection\
+
+On successful detections:
+- magenta boxes = all merged tower detections in the source image
+- orange box = source tile that produced the selected detection
+- green box = visual detection selected for this structure ID
+- white box = final crop
+- white cross = weak geometry prior
+
+NO_DETECTION images still show any detections found elsewhere in the frame. A crop is not written for the
+structure row unless that row receives a unique visual detection.
+
+New CSV diagnostics include
+---------------------------
+tower_detector_backend
+tower_detection_mode
+tower_tile_count
+tower_tiles_with_detections
+tower_tile_size
+tower_tile_overlap
+tower_image_detection_count
+tower_selected_tile_index
+tower_selected_tile_xmin/ymin/xmax/ymax
+tower_edge_touch
+
+Expected statuses
+-----------------
+OK_VISUAL_DETECTION   visual tower found and crop saved
+NO_VISUAL_DETECTION   no unique tower assigned; no crop saved
+DETECTOR_ERROR        inference/runtime error
+DETECTOR_LOAD_FAILED  detector could not load
+DETECTION_BOX_FAILED  invalid selected visual bbox

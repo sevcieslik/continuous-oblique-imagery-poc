@@ -1,0 +1,139 @@
+Continuous Oblique Imagery POC v0.5
+===================================
+
+Purpose
+-------
+v0.5 turns the geometry/reference model into a reviewable candidate product.
+It keeps every accepted continuous-oblique image, assigns an explicit reference
+confidence, renders annotated 163 candidate JPGs, and generates per-structure
+crop candidates without modifying source imagery.
+
+New in v0.5
+-----------
+1. Explicit reference confidence
+   - HIGH / MEDIUM / LOW / AMBIGUOUS
+   - BOUNDARY_AMBIGUOUS when the OPK target is close to a span boundary
+   - alternative_reference retained in the manifest
+
+2. Candidate 163 output
+   - deterministic output IDs
+   - circuit/reference/date/version naming
+   - annotation matching the current 163 style:
+       Span ID: ...
+       Circuit: ...
+       Date: MM-DD-YYYY
+   - FORWARD/BACKWARD folders
+   - default is review-size previews, not full-resolution copies
+
+3. Structure crops
+   - one folder per reference structure
+   - forward / backward / other_views buckets
+   - PRODUCT_VIEW crops rendered by default
+   - SIDE/CROSSING/non-product observations remain in the CSV and can be
+     rendered with --render-other-views
+   - pixel projection is an approximation from EO OPK + delivered footprint FOV
+     + PLS structure Z/height. It is NOT calibrated camera projection yet.
+
+4. Existing image benchmark reuse
+   - if a compatible v0.4/v0.3 existing_163_benchmark.csv exists, v0.5 reuses it
+     by default instead of rereading every large JPG
+   - use --rebuild-image-benchmark to force a new appearance benchmark
+
+Recommended first run
+---------------------
+cd D:\Sev\Obliques\NYPA
+
+python -m pip install -r requirements_continuous_oblique_v05.txt
+
+python .\continuous_oblique_v05.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1
+
+Default image output
+--------------------
+The default --render-mode preview writes review-size candidate JPGs with a
+maximum dimension of 4096 pixels. This is deliberate: the raw images are very
+large and a full candidate set can consume many GB.
+
+After visual QA, full-resolution candidate copies can be generated with:
+
+python .\continuous_oblique_v05.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --render-mode full `
+  --output "D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v05_full"
+
+Quick smoke test
+----------------
+To render only the first 10 accepted images/crops:
+
+python .\continuous_oblique_v05.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --render-limit 10 `
+  --output "D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v05_smoke"
+
+If capture date inference is not wanted, force the known date explicitly:
+
+  --capture-date 042226
+
+Manifest-only run
+-----------------
+To test geometry/product naming without writing JPGs or crops:
+
+python .\continuous_oblique_v05.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --render-mode none `
+  --skip-structure-crops
+
+Output
+------
+D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v05
+
+Key outputs
+-----------
+product_manifest.csv
+    One row per retained candidate 163 image. Includes pass/run, chainage,
+    primary reference, alternative reference, boundary distance, confidence,
+    acquisition and product sequence, generated filename and render status.
+
+163_candidate\forward\
+163_candidate\backward\
+    Annotated review JPGs. Default is preview resolution.
+
+structure_crop_candidates.csv
+    One row per structure/image observation including approximate pixel
+    projection, crop box, view/pass direction, QA role and render status.
+
+structure_crops\<reference>_<structure>\forward\
+structure_crops\<reference>_<structure>\backward\
+structure_crops\<reference>_<structure>\other_views\
+    Generated structure crops. other_views are metadata-only by default unless
+    --render-other-views is supplied.
+
+continuous_oblique_poc_v05.gpkg
+    Includes product_candidates and structure_crop_candidates layers in addition
+    to the v0.4 QA layers.
+
+Important
+---------
+- BOUNDARY_AMBIGUOUS images stay in the continuous sequence. They are not removed.
+- Provisional images recovered from missing footprints stay explicitly marked
+  PROVISIONAL.
+- Structure crop projection is deliberately marked approximate until camera
+  interior orientation/calibration is introduced.
+- DINOv3 is not used in v0.5. The next visual-QA stage can consume the generated
+  product sequence and structure crops without changing the geometry schema.
+- No source imagery is modified, renamed or deleted.
+
+Please return after the run
+---------------------------
+summary.json
+product_manifest.csv
+structure_crop_candidates.csv
+existing_163_benchmark.csv
+opk_benchmark.csv
+
+And, if practical, 3-5 generated JPGs from 163_candidate plus a few structure
+crops so the annotation and crop projection can be visually checked.

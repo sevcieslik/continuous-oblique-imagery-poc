@@ -1,0 +1,51 @@
+Continuous Oblique Imagery POC v0.1
+===================================
+
+1. Create/activate a Python environment.
+
+2. Install dependencies:
+
+   python -m pip install -r requirements_continuous_oblique_v01.txt
+
+3. Run against the NYPA project root:
+
+   python continuous_oblique_v01.py "D:\Sev\Obliques\NYPA" --circuit DH1
+
+The script auto-selects the highest vN folder for:
+- 130_raw_overlapping_oblique_imagery
+- 163_continuous_oblique_imagery (benchmark/reference only)
+- 277_camera_eo
+- 30_classified_tiled_point_cloud (indexed but not used yet in v0.1)
+- 40_pls_cadd_staking_table
+
+It also loads *footprint*.dxf from the project root.
+
+Default output:
+D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v01\
+
+Main output:
+- continuous_oblique_poc.gpkg
+- image_index.csv
+- flight_passes.csv
+- transitions.csv
+- coverage_gaps.csv
+- structure_observations.csv
+- eo_sources.csv
+- existing_163_index.csv
+- summary.json
+
+Important v0.1 limitations:
+- No DINOv3 yet.
+- LiDAR is not yet used to refine structure position/height.
+- Camera OPK is retained, but exact optical-axis projection is not used until camera calibration/convention is validated.
+- FORWARD/BACKWARD/SIDE is therefore geometry-based using camera position relative to local alignment.
+- POC assumes one ordered primary circuit in the staking XML. Branching circuits need a graph model in a later version.
+- The script is read-only with respect to source imagery.
+
+Useful alternate run:
+
+   python continuous_oblique_v01.py "D:\Sev\Obliques\NYPA" --circuit DH1 --reference-mode structure
+
+To inspect side views instead of rejecting them as product candidates:
+
+   python continuous_oblique_v01.py "D:\Sev\Obliques\NYPA" --circuit DH1 --allow-side

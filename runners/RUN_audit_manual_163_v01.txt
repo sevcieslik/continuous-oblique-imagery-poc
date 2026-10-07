@@ -1,0 +1,57 @@
+Manual 163 internal audit with DINOv3
+
+Recommended full run
+--------------------
+Use the same Python environment that successfully ran DINOv3 for continuous_oblique_v014.py.
+
+Example using the previously working venv:
+
+& "D:\Sev\Obliques\NYPA\.venv-v07\Scripts\python.exe" `
+  "D:\Sev\Obliques\DH1\audit_manual_163_v01.py" `
+  "D:\Sev\Obliques\DH1"
+
+Smoke test first, if desired:
+
+& "D:\Sev\Obliques\NYPA\.venv-v07\Scripts\python.exe" `
+  "D:\Sev\Obliques\DH1\audit_manual_163_v01.py" `
+  "D:\Sev\Obliques\DH1" `
+  --max-images 50 `
+  --review-limit 30 `
+  --output "D:\Sev\Obliques\DH1\_audit_manual_163_v01_smoke"
+
+If the old venv was moved, use whichever interpreter gives:
+  torch 2.6.0+cpu
+and can load:
+  facebook/dinov3-vits16-pretrain-lvd1689m
+
+Default DINO source mode
+------------------------
+raw-when-trusted:
+- HIGH/MEDIUM manual-final -> raw matches use the original raw image for DINO,
+  avoiding lower-right delivery annotation bias.
+- unresolved/LOW matches use the manual final JPG itself.
+
+To force DINO to inspect only delivered manual JPG pixels:
+  --feature-source manual
+
+Main outputs
+------------
+_audit_manual_163_v01\
+  audit_summary.json
+  audit_summary.csv
+  manual_image_audit.csv
+  geometry_run_transitions.csv
+  span_continuity.csv
+  duplicate_candidates.csv
+  label_suspects.csv
+  trusted_manual_subset.csv
+  dino_feature_index.csv
+  review_manifest.csv
+  report.html
+  review\
+  qa\visual_continuity\feature_cache\
+
+Important
+---------
+Flags are review candidates only. The script never deletes, renames, or relabels
+manual product imagery.

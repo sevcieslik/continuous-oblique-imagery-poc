@@ -1,0 +1,78 @@
+Continuous Oblique Imagery POC v0.8.1
+=====================================
+
+Purpose of v0.8.1
+-----------------
+Keep the validated sequence / DINO logic from v0.8 and correct the structure-projection math revealed by the v0.8 QA images.
+
+What was wrong in v0.8
+----------------------
+The footprint homography was treated inconsistently:
+- structure base XY was mapped directly through H;
+- structure top was projected to a different plane (base_z) before H.
+
+A homography represents one reference plane. Mixing planes creates along-view offsets in oblique imagery, especially where ground elevation varies.
+
+v0.8.1 correction
+-----------------
+1. Build the footprint homography using one reference plane Z (optical-target/local ground Z).
+2. Project BOTH the 3-D structure base and 3-D structure top along their camera rays to that SAME reference plane.
+3. Apply the same homography H to both ray-plane intercepts.
+4. Build the crop from the resulting base/top pixels.
+5. Keep the old approximate OPK/FOV model only as an explicit fallback.
+
+This remains footprint-constrained projection, not a full distortion-aware camera calibration.
+
+Important product rule
+----------------------
+Span visibility is QA metadata only. Images are NOT removed because a complete span or both structures are not visible.
+Sequence membership is decided by circuit-run geometry / pass direction / AOI logic. DINO remains QA-only.
+
+Windows / PyTorch
+-----------------
+Tested Windows CPU combination:
+  torch 2.6.0+cpu
+  torchvision 0.21.0+cpu
+
+Recommended v0.8.1 crop smoke test
+----------------------------------
+DINO already passed its smoke test, so skip it while reviewing structure projection:
+
+python .\continuous_oblique_v081.py `
+  "D:\Sev\Obliques\NYPA" `
+  --circuit DH1 `
+  --capture-date 042226 `
+  --render-limit 10 `
+  --crop-qa-limit 20 `
+  --skip-dino `
+  --output "D:\Sev\Obliques\NYPA\_continuous_oblique_poc_v081_smoke"
+
+Review
+------
+1. structure_crops\...
+2. qa\structure_projection\...
+3. structure_crop_candidates.csv
+4. summary.json
+
+Useful diagnostics added / retained
+-----------------------------------
+projection_model
+projection_reference_plane_z
+base_ray_ground_x / base_ray_ground_y / base_ray_t
+top_ray_ground_x / top_ray_ground_y / top_ray_t
+footprint_corner_order
+homography_order_score
+homography_condition
+homography_reprojection_px
+base_x_px / base_y_px
+top_x_px / top_y_px
+crop_xmin / crop_ymin / crop_xmax / crop_ymax
+crop_debug_path
+
+Expected primary projection model:
+  FOOTPRINT_HOMOGRAPHY_REFERENCE_PLANE
+
+Expected primary status:
+  OK_HOMOGRAPHY
+
+No source imagery is modified.

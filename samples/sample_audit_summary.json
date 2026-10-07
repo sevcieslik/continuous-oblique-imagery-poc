@@ -1,0 +1,15 @@
+{
+  "manual_images": 400,
+  "geometry_auditable_images": 250,
+  "transition_status_counts": {
+    "CONTINUOUS": 241,
+    "VISUAL_REVIEW": 6,
+    "GEOMETRY_JUMP_VISUAL_OK": 1
+  },
+  "trusted_grade_A": 236,
+  "calibration_pool_A_or_B": 250,
+  "expected_high_overlap_pairs": 243,
+  "true_duplicate_suspects": 0,
+  "missing_manual_spans_expected_by_topology": 9,
+  "note": "Example metrics derived from the DH1 validation exercise; filenames/project identifiers removed."
+}
