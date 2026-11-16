@@ -28,7 +28,7 @@ base Conda Python, where `torch` failed to load `c10.dll`.
 ## Suggested smoke command
 
 ```powershell
-python .\src\continuous_oblique_v014.py `
+python .\src\continuous_oblique_v015.py `
   "D:\path\project" `
   --circuit CIRCUIT `
   --structure-class 215 `
@@ -37,6 +37,18 @@ python .\src\continuous_oblique_v014.py `
   --skip-dino `
   --skip-tower-dino `
   --output "D:\path\project\_continuous_oblique_smoke"
+```
+
+`structure_detection_v015.py` must sit next to `continuous_oblique_v015.py` when the scripts are copied
+into a project folder. On corridors shared with another circuit add
+`--competitor-structures <FLI 00_structures_by_circuit>\<NEIGHBOUR>_structures.csv`.
+
+After a structure run, check `qa\structure_detection\review` first (ambiguous / competitor-owned /
+medium-confidence cases), then build the catalogue and the evaluation pack:
+
+```powershell
+python .\src\build_structure_catalog_v01.py "D:\path\project\_continuous_oblique_smoke" --circuit CIRCUIT
+python .\tools\evaluate_structure_detector_v01.py "D:\path\project\_continuous_oblique_smoke"
 ```
 
 `215` is only an example from DH1. Change it when the new point-cloud schema differs.

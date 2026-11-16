@@ -158,6 +158,9 @@ def main(argv=None) -> int:
     version = clean_token(args.output_version, "v1")
     delivery = (args.delivery_root or (run / "deliverable")).resolve()
     if delivery.exists():
+        # Only replace a previous delivery package; never wipe an arbitrary folder.
+        if any(delivery.iterdir()) and not (delivery / "delivery_summary.json").exists():
+            raise SystemExit(f"Refusing to overwrite {delivery}: it is not empty and has no delivery_summary.json")
         shutil.rmtree(delivery)
     delivery.mkdir(parents=True, exist_ok=True)
 

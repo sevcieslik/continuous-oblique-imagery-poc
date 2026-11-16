@@ -4,7 +4,11 @@ Internal proof-of-concept for building and validating a continuous oblique image
 raw oblique photography, camera EO, image footprints, PLS-CADD staking, classified LiDAR and
 visual foundation models.
 
-The current reference implementation is `src/continuous_oblique_v014.py`.
+The current reference implementation is `src/continuous_oblique_v015.py` (with its helper module
+`src/structure_detection_v015.py`). v0.15 adds competitor-aware structure detection and a
+georeferenced **structure catalogue** (`src/build_structure_catalog_v01.py`) that feeds
+[FLI_frame_maker](https://github.com/sevcieslik/FLI_frame_maker) and provides tie points for
+georeference validation. See `docs/STRUCTURE_CATALOG.md`.
 
 ## Core product definition
 
@@ -46,9 +50,11 @@ Typical project root:
 7. Assign span/structure references without using visibility as a deletion gate.
 8. Check pass-specific geometric continuity and gaps.
 9. Run DINOv3 visual-continuity QA between adjacent legal frames.
-10. Detect structures for downstream crops using geometry-constrained Grounding DINO.
+10. Detect structures for downstream crops using geometry-constrained Grounding DINO, with
+    competitor-aware assignment (parallel circuits / neighbouring towers) and per-pass prior calibration.
 11. Render annotated 163 candidates, QA CSV/GPKG outputs and structure crops.
-12. Optionally benchmark against an existing/manual 163 product.
+12. Build the structure catalogue (FLI export, tie points, GeoJSON).
+13. Optionally benchmark against an existing/manual 163 product.
 
 ## Current status
 
@@ -59,7 +65,9 @@ The DH1 validation dataset demonstrated:
 - a recurring off-by-one span-label pattern, especially on backward travel;
 - false `CROSSING_PASS` classifications in some frames used by the manual product;
 - the need to audit manual production before using it as ground truth;
-- substantially better tower localisation when Grounding DINO is constrained to a local geometry ROI.
+- substantially better tower localisation when Grounding DINO is constrained to a local geometry ROI;
+- on parallel-circuit corridors (DH1/DH2 ~163 ft apart) the v0.14 nearest-to-prior assignment can crop
+  the neighbouring circuit's tower; v0.15 resolves this with competitor hypotheses and registration.
 
 See `docs/OBSERVATIONS.md` and `docs/VALIDATION.md` for measured results and caveats.
 
@@ -80,12 +88,25 @@ facebook/dinov3-vits16-pretrain-lvd1689m
 Example:
 
 ```powershell
-python .\src\continuous_oblique_v014.py `
+python .\src\continuous_oblique_v015.py `
   "D:\path\to\project" `
   --circuit CIRCUIT_ID `
   --structure-class 215 `
   --render-mode full `
-  --output "D:\path\to\project\_continuous_oblique_CIRCUIT_ID_full_v014"
+  --render-other-views `
+  --competitor-structures "D:\path\to\00_structures_by_circuit\NEIGHBOUR_structures.csv" `
+  --output "D:\path\to\project\_continuous_oblique_CIRCUIT_ID_full_v015"
+
+python .\src\build_structure_catalog_v01.py "D:\path\to\project\_continuous_oblique_CIRCUIT_ID_full_v015" --circuit CIRCUIT_ID
+```
+
+Or run everything with `runners\RUN_full_circuit_v015.ps1 -Circuit CIRCUIT_ID`.
+
+Tests (no model weights or project data needed):
+
+```powershell
+python -m pip install -r requirements-dev.txt
+python -m pytest tests
 ```
 
 `215` is an empirical class used on one validation project. It is **not a universal structure-class
@@ -94,8 +115,9 @@ standard**; profile/confirm the classification schema on every new dataset.
 ## Repository layout
 
 ```text
-src/       current pipeline and delivery packager
-tools/     benchmarking, manual-audit and adjudication utilities
+src/       current pipeline, detection helpers, delivery packager, structure catalogue builder
+tools/     benchmarking, manual-audit, adjudication and detector-evaluation utilities
+tests/     pytest unit + synthetic integration tests
 runners/   PowerShell runners/examples
 docs/      product rules, architecture, findings and roadmap
 samples/   anonymised schemas/examples only

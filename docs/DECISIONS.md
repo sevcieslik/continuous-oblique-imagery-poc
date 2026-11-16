@@ -56,3 +56,31 @@ assignment.
 
 163 sequence construction should not be tightly coupled to later FLI matching. The pipeline exports
 structure observations/crops; a separate module can rank or compare those views later.
+
+## D009 - Assign detections against competing hypotheses, not just the nearest prior
+
+**Status:** accepted in v0.15.
+
+Evidence: the DH1 smoke run cropped the parallel DH2 tower for SR1-60/05 (1 of 5). DH2 runs ~163 ft
+from DH1 while the geometry prior is offset by 1000-1500 px. Neighbouring towers (LiDAR clusters,
+optional neighbour-circuit CSV) are projected with the same camera model; a common translation is
+registered across all hypotheses and each detection belongs to the hypothesis that owns it. When the
+evidence does not separate the candidates the row is `AMBIGUOUS_ASSIGNMENT` and no crop is written
+(consistent with D006).
+
+## D010 - Prior bias is calibrated online, per pass, from confident detections only
+
+**Status:** accepted in v0.15.
+
+Rolling robust median of (detection - raw prior) per `pass_id`, with a global fallback. Only
+high-ownership, non-edge detections above a detector-score floor feed the tracker, so a wrong assignment
+cannot easily drag the bias.
+
+## D011 - The structure catalogue is the downstream contract
+
+**Status:** accepted in v0.15.
+
+FLI framing and georeference validation consume the catalogue, not pipeline internals. The catalogue
+keeps every accepted observation, flags (never deletes) residual outliers, and ranks best views as
+metadata. `structure_id` is the PLS `structure_number`, which is the key FLI_frame_maker uses for the
+staking XML.

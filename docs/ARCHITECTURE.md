@@ -61,7 +61,29 @@ visual evidence are combined into review statuses without changing membership.
 
 ### G. Structure detection/crops
 
-Current v0.14 flow:
+Current v0.15 flow (`render_candidate_products_and_crops_v15`, helpers in `structure_detection_v015.py`):
+
+1. LiDAR/EO/footprint geometry predicts a source-pixel prior for every target structure in the frame.
+2. The prior is shifted by the per-pass robust median of earlier confident detection offsets.
+3. Competitor hypotheses are projected with the same camera model: LiDAR structure-class clusters near
+   the target that are not the target, plus optional neighbour-circuit structures (FLI step-00 CSV).
+4. Local ROIs are tiled at source resolution and Grounding DINO runs only there.
+5. Tile-edge artefacts are rejected, then containment NMS (IoU or intersection-over-min) merges duplicates.
+6. Full-image and ROI plausibility filters (as v0.14).
+7. **Registration:** a single pixel translation aligning all hypotheses (targets + competitors) with the
+   detections is estimated; it is accepted only when several hypotheses support it with a clear margin.
+   This makes assignment invariant to EO offsets larger than half the tower spacing.
+8. **Ownership:** each detection is softly owned by the nearest (registered) hypothesis. A target may
+   only take detections it owns.
+9. Scores combine ownership, detector confidence, absolute geometry and optional DINOv3 tracking.
+   One-to-one assignment with explicit `AMBIGUOUS_ASSIGNMENT`, `REJECTED_COMPETITOR_OWNED`,
+   `LOW_ASSIGNMENT_SCORE` statuses. DINO templates update only from `HIGH` confidence matches.
+10. Camera-model quality, projected staking base and detection residuals are written per row.
+
+Crop-only frames (crossing/side views) are processed when `--render-other-views` is set. Rows outside
+`--render-limit` are `NOT_IN_RENDER_SUBSET`.
+
+Previous v0.14 flow:
 
 1. LiDAR/EO/footprint geometry predicts a source-pixel prior.
 2. Build a local ROI around the prior.
@@ -86,6 +108,13 @@ The delivery packager separates:
 - global structure coverage;
 - selected QA metadata.
 
+### I. Structure catalogue
+
+`build_structure_catalog_v01.py` turns accepted detections into a tagged, georeferenced catalogue:
+observation and structure tables, GeoJSON, best-view ranking, per-pass residual consistency flags,
+image↔world tie points and an FLI_frame_maker assignment CSV + EXIF-bearing images. It never changes
+detection results. See `STRUCTURE_CATALOG.md`.
+
 ## High-level flow
 
 ```mermaid
@@ -105,6 +134,9 @@ flowchart LR
     E --> T
     T --> G[Grounding DINO structure detection]
     G --> CROP[Structure crops + observations]
+    CROP --> CAT[Structure catalogue]
+    CAT --> FLI[FLI_frame_maker]
+    CAT --> GV[Georeference validation tie points]
     Q --> QA[QA / review queue]
     L --> QA
     P --> QA

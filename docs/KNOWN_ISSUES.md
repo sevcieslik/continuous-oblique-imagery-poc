@@ -40,11 +40,30 @@ The pipeline uses EO/OPK, footprints and LiDAR-derived geometry but does not yet
 lens-distortion-aware camera calibration. Geometry should constrain search and provide QA, not be treated
 as guaranteed pixel truth.
 
+## Parallel circuits / neighbouring towers
+
+On shared corridors (DH1 + DH2) the neighbouring tower can be closer to the geometry prior than the
+target. v0.14 selected the neighbour in 1 of 5 smoke-run crops. v0.15 adds competitor hypotheses,
+registration and ownership. Residual risk: if neither LiDAR clusters nor a neighbour CSV describe the
+other circuit, and only one tower is detected, registration cannot run and the assignment falls back to
+bias-corrected ownership. Provide `--competitor-structures` for known parallel circuits.
+
+## Prior offset varies inside a pass
+
+Smoke-run residuals were 117-1470 px with a large along-track spread; a per-pass pixel bias is a first
+order correction only. A proper fix is EO/OPK refinement (bundle adjustment against tie points from the
+catalogue) and lens-distortion modelling.
+
 ## Grounding DINO false positives
 
 Whole-image/tiled detection produced many background/field boxes. v0.14 significantly reduces this by
 limiting search to local geometry ROIs, but structure detection still needs an adjudicated bbox/crop
 benchmark across multiple structure types and projects.
+
+## Crop resolution for FLI
+
+Crops capped by `--crop-max-dimension` (1600 default, 2048 in runners) are upscaled ~3.5x by FLI v4.
+Use `--crop-max-dimension 0` when crops feed FLI framing.
 
 ## CPU performance
 

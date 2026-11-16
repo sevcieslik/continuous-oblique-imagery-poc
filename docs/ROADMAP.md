@@ -1,6 +1,17 @@
 # Roadmap
 
-## v0.15 - reference and pass logic
+## v0.15 - structure detection + catalogue (branch `feature/structure-catalog-v015`)
+
+- competitor-aware assignment (LiDAR tower clusters, neighbour-circuit CSV), per-image registration;
+- per-pass online prior-bias calibration;
+- tile-artefact rejection, containment NMS, explicit ambiguity statuses;
+- structure catalogue with FLI_frame_maker export and georeference tie points;
+- detector evaluation/adjudication tool; pytest suite.
+
+Next on this track: run full DH1 with `--competitor-structures DH2_structures.csv`, adjudicate the
+review pack, then tune `--tower-min-ownership` / registration thresholds on labelled data.
+
+## v0.16 - reference and pass logic
 
 Highest priority because the benchmark indicates these are larger errors than raw-frame selection.
 
@@ -12,7 +23,7 @@ Highest priority because the benchmark indicates these are larger errors than ra
   has low along-track progression;
 - preserve an adjudication trace for every reference/pass decision.
 
-## v0.16 - multi-project calibration
+## v0.17 - multi-project calibration
 
 - validate DH1 learnings on PA27 and at least one additional circuit;
 - calculate per-project and pooled metrics;
@@ -20,15 +31,16 @@ Highest priority because the benchmark indicates these are larger errors than ra
 - formalise structure-class profiling instead of carrying class 215 between datasets;
 - improve coordinate-system diagnostics and fail early on incompatible EO.
 
-## v0.17 - structure detection/crops
+## v0.18 - structure detection/crops (remaining)
 
-- benchmark Grounding DINO crop precision against manually reviewed structure boxes/crops;
+- benchmark Grounding DINO crop precision against manually reviewed structure boxes/crops
+  (tooling exists: `tools/evaluate_structure_detector_v01.py`);
 - add structure-type-aware prompts and thresholds;
 - evaluate larger Grounding DINO checkpoint / GPU batching where useful;
 - use DINOv3 temporal/sequence tracking to stabilise tower identity without overriding geometry;
-- preserve multiple valid views and add `is_best_view` ranking as metadata only.
+- EO/OPK refinement from catalogue tie points; lens distortion.
 
-## v0.18 - evaluation harness
+## v0.19 - evaluation harness
 
 - create a versioned adjudicated ground-truth package;
 - unit tests for span boundary logic, direction handling and gap classification;
@@ -37,7 +49,7 @@ Highest priority because the benchmark indicates these are larger errors than ra
   continuity outliers, crop detection precision/recall;
 - compare each release automatically against frozen benchmark outputs.
 
-## v0.19 - performance and packaging
+## v0.20 - performance and packaging
 
 - configurable YAML/TOML project profile;
 - GPU/CPU execution profiles;

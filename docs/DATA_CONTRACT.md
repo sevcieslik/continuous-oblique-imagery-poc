@@ -47,6 +47,17 @@ Recommended stable concepts for downstream consumers:
 - `tower_*bbox*`
 - `crop_path`
 
+v0.15 additions (see `docs/STRUCTURE_CATALOG.md` for the catalogue schema):
+
+- `tower_assignment_status` (`ASSIGNED_COMPETITOR_AWARE`, `AMBIGUOUS_ASSIGNMENT`, `REJECTED_COMPETITOR_OWNED`,
+  `LOW_ASSIGNMENT_SCORE`, `NO_*`, `NOT_IN_RENDER_SUBSET`), `tower_assignment_confidence` (`HIGH`/`MEDIUM`)
+- `tower_ownership`, `tower_owner_key`, `tower_assignment_margin`
+- `competitor_hypothesis_count`, `competitor_nearest_label`, `competitor_nearest_prior_distance_px`
+- `image_registration_status`, `image_registration_dx_px`, `image_registration_dy_px`, `image_registration_support`
+- `geometry_prior_raw_x_px/_y_px`, `prior_bias_dx_px/_dy_px`, `prior_bias_n`, `prior_bias_source`
+- `camera_model_quality`, `camera_reprojection_rms_px`
+- `staking_base_x_px/_y_px`, `detected_base_x_px/_y_px`, `georef_residual_*`, `prior_residual_*`
+
 ## Output policy
 
 CSV and GPKG outputs are QA/audit artefacts. Rendered images are derived products. Do not infer that

@@ -19,7 +19,7 @@ $Packager = Join-Path $ProjectRoot "package_continuous_oblique_delivery_v01.py"
 
 if (-not (Test-Path $MainScript)) {
     # Repository layout fallback.
-    $MainScript = Join-Path $PSScriptRoot "..\src\continuous_oblique_v014.py"
+    $MainScript = Join-Path $PSScriptRoot "..\archive\pipeline_versions\continuous_oblique_v014.py"
 }
 if (-not (Test-Path $Packager)) {
     $Packager = Join-Path $PSScriptRoot "..\src\package_continuous_oblique_delivery_v01.py"
