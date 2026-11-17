@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv*/
+# run outputs and project data never belong in the repository
+_continuous_oblique_*/
+_benchmark_*/
+_audit_*/
+*.las
+*.laz

@@ -1,24 +1,28 @@
 #!/usr/bin/env python
 r"""
-Continuous Oblique Imagery POC v0.14
+Continuous Oblique Imagery POC v0.15
 
 Purpose
 -------
-Build the continuous-oblique candidate sequence and QA outputs from an NM-style project root.
-The validated sequence / span-labelling logic remains unchanged. v0.14 changes only the
-structure-crop detector: Grounding DINO is constrained to a local ROI derived from the
-LiDAR/EO geometry prior instead of searching the whole source image.
+Build the continuous-oblique candidate sequence and QA outputs from an NM-style project root, and
+detect transmission structures in the source frames to feed a georeferenced structure catalogue.
+The validated sequence / span-labelling logic is unchanged from v0.14. v0.15 changes only the
+structure-detection / crop stage.
 
-Structure-crop workflow in v0.14
---------------------------------
-- Staking/LiDAR/EO geometry supplies the predicted pixel position of each structure.
-- A configurable local square ROI is built around that prediction.
-- Grounding DINO (default) or another Transformers zero-shot detector runs only inside those ROIs.
-- Large/background detections are filtered both against the full image and against the local ROI.
-- Candidate detections are scored primarily by detector confidence and proximity to the geometry prior.
-- Multiple structures in one image are assigned to distinct visual detections.
-- Optional DINOv3 tracking favours the same structure across overlapping frames.
-- If no acceptable tower is detected in the local ROI, no structure crop is written.
+Structure detection in v0.15
+----------------------------
+- Staking + LiDAR + EO/footprint geometry predicts each structure's pixel position (prior).
+- The prior is corrected online by a per-pass robust median of confident detection offsets.
+- Grounding DINO runs only inside local ROIs around the corrected priors.
+- Tile-edge artefacts are rejected; nested boxes are removed with containment NMS.
+- Competitor hypotheses (other LiDAR tower clusters near the target, optional neighbour-circuit
+  structure CSV e.g. FLI_frame_maker step-00 output) are projected with the same camera model.
+  A detection is owned by the hypothesis nearest to it, so a common EO offset cannot move the
+  assignment to a parallel circuit.
+- Explicit statuses: ASSIGNED_COMPETITOR_AWARE (HIGH/MEDIUM), AMBIGUOUS_ASSIGNMENT,
+  REJECTED_COMPETITOR_OWNED, LOW_ASSIGNMENT_SCORE, NO_* and NOT_IN_RENDER_SUBSET.
+- Camera-model quality, projected staking base and pixel residuals are written for catalogue
+  building (src/build_structure_catalog_v01.py) and georeference validation.
 - Missing structure crops never remove or relabel an image in product 163.
 
 Continuous-product rules
@@ -31,7 +35,10 @@ Continuous-product rules
 
 Example
 -------
-python continuous_oblique_v014.py "D:\Sev\Obliques\NYPA" --circuit DH1 --skip-dino --skip-tower-dino
+python continuous_oblique_v015.py "D:\Sev\Obliques\DH1" --circuit DH1 --structure-class 215 ^
+    --competitor-structures "D:\...\00_structures_by_circuit\DH2_structures.csv"
+
+Requires structure_detection_v015.py in the same folder.
 
 Dependencies
 ------------
@@ -6210,6 +6217,820 @@ def render_candidate_products_and_crops_v14(
     if dino_error: meta["dino_load_error"]=dino_error
     return man,crops,meta
 
+# -----------------------------------------------------------------------------
+# v0.15 competitor-aware, bias-calibrated structure detection
+# -----------------------------------------------------------------------------
+
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import structure_detection_v015 as sdet
+except ImportError as _sdet_exc:  # pragma: no cover - deployment error
+    raise SystemExit(
+        "continuous_oblique_v015.py requires structure_detection_v015.py in the same folder.\n"
+        f"Import error: {_sdet_exc}"
+    )
+
+
+V15_EXTRA_CROP_COLUMNS = [
+    "geometry_prior_raw_x_px", "geometry_prior_raw_y_px",
+    "prior_bias_dx_px", "prior_bias_dy_px", "prior_bias_n", "prior_bias_spread_px", "prior_bias_source",
+    "competitor_hypothesis_count", "competitor_nearest_label", "competitor_nearest_prior_distance_px",
+    "tower_ownership", "tower_owner_key", "tower_assignment_margin", "tower_assignment_confidence",
+    "tower_lidar_cluster_count", "tower_target_cluster_found",
+    "staking_base_x_px", "staking_base_y_px", "detected_base_x_px", "detected_base_y_px",
+    "georef_residual_dx_px", "georef_residual_dy_px", "georef_residual_px",
+    "prior_residual_dx_px", "prior_residual_dy_px", "prior_residual_px",
+    "tower_qa_reason",
+    "image_registration_status", "image_registration_dx_px", "image_registration_dy_px",
+    "image_registration_support", "image_registration_second_support", "image_registration_matched",
+]
+
+
+V15_BASE_CROP_COLUMNS = [
+    "crop_xmin", "crop_ymin", "crop_xmax", "crop_ymax", "lidar_ground_z", "lidar_structure_base_z",
+    "lidar_structure_top_z", "lidar_structure_height", "lidar_structure_point_count",
+    "camera_reprojection_rms_px", "camera_reprojection_rms_fraction", "camera_center_offset_fraction",
+    "geometry_prior_x_px", "geometry_prior_y_px", "geometry_prior_distance_px", "tower_detector_score",
+    "tower_detector_final_score", "tower_dino_similarity", "tower_box_xmin", "tower_box_ymin",
+    "tower_box_xmax", "tower_box_ymax", "tower_search_xmin", "tower_search_ymin", "tower_search_xmax",
+    "tower_search_ymax", "tower_detection_count", "source_width", "source_height",
+]
+V15_BASE_OBJECT_COLUMNS = [
+    "crop_path", "crop_debug_path", "crop_render_status", "crop_projection_status", "crop_projection_confidence",
+    "projection_model", "tower_detector_status", "tower_detector_model", "tower_detector_label",
+    "tower_refine_status", "tower_search_mode", "camera_model_type", "camera_model_quality",
+    "footprint_corner_order", "lidar_ground_class", "lidar_structure_class",
+]
+
+
+def _ensure_v15_crop_columns(crops: pd.DataFrame) -> pd.DataFrame:
+    crops = crops.copy()
+    missing = {c: np.nan for c in V15_BASE_CROP_COLUMNS if c not in crops.columns}
+    missing.update({c: None for c in V15_BASE_OBJECT_COLUMNS if c not in crops.columns})
+    if missing:
+        crops = pd.concat([crops, pd.DataFrame(missing, index=crops.index)], axis=1)
+    if "crop_render_status" in crops.columns:
+        crops["crop_render_status"] = crops["crop_render_status"].fillna("NOT_RUN")
+    out = _ensure_v11_crop_columns(crops)
+    for c in V15_EXTRA_CROP_COLUMNS:
+        if c not in out.columns:
+            out[c] = np.nan if not c.endswith(("_source", "_label", "_key", "_confidence", "_reason", "_status")) else None
+    for c in ["camera_model_type", "camera_model_quality", "tower_assignment_status", "tower_rejection_reason",
+              "prior_bias_source", "competitor_nearest_label", "tower_owner_key", "tower_assignment_confidence",
+              "tower_qa_reason", "tower_target_cluster_found", "tower_detector_status", "crop_projection_status",
+              "crop_render_status", "crop_path", "crop_debug_path", "tower_refine_status", "tower_detector_label",
+              "projection_model", "crop_projection_confidence", "tower_search_mode", "tower_detection_mode",
+              "tower_detector_model", "tower_detector_backend", "footprint_corner_order",
+              "lidar_ground_class", "lidar_structure_class", "image_registration_status"]:
+        if c in out.columns:
+            out[c] = out[c].astype(object)
+    return out.copy()
+
+
+def load_competitor_structures(path: Path | None, crs: CRS, circuit: str | None = None) -> pd.DataFrame:
+    """Load optional neighbour-circuit structures used as competitor hypotheses.
+
+    Accepts the FLI_frame_maker step-00 CSV (`lat`, `lon`, `structure_id`, `circuit`) or any CSV with
+    project-CRS `x`/`y` (or `easting`/`northing`) columns. Rows of the processed circuit are dropped.
+    """
+    if path is None:
+        return pd.DataFrame(columns=["competitor_id", "circuit", "x", "y"])
+    frames = []
+    paths = [Path(p) for p in str(path).split(";") if str(p).strip()]
+    for p in paths:
+        if p.is_dir():
+            files = sorted(p.glob("*_structures.csv")) or sorted(p.glob("*.csv"))
+        else:
+            files = [p]
+        for f in files:
+            try:
+                df = pd.read_csv(f, low_memory=False, encoding="utf-8-sig")
+            except UnicodeDecodeError:
+                df = pd.read_csv(f, low_memory=False, encoding="latin1")
+            frames.append(df)
+    if not frames:
+        return pd.DataFrame(columns=["competitor_id", "circuit", "x", "y"])
+    df = pd.concat(frames, ignore_index=True)
+    cols = {c.lower(): c for c in df.columns}
+    sid = cols.get("structure_id") or cols.get("structure_name") or cols.get("display_structure_id")
+    circ = cols.get("circuit")
+    out = pd.DataFrame({
+        "competitor_id": df[sid].astype(str) if sid else df.index.astype(str),
+        "circuit": df[circ].astype(str) if circ else "",
+    })
+    xcol = cols.get("x") or cols.get("easting")
+    ycol = cols.get("y") or cols.get("northing")
+    if xcol and ycol and pd.to_numeric(df[xcol], errors="coerce").notna().any():
+        out["x"] = pd.to_numeric(df[xcol], errors="coerce")
+        out["y"] = pd.to_numeric(df[ycol], errors="coerce")
+    elif cols.get("lat") and cols.get("lon"):
+        from pyproj import Transformer
+        tr = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+        lon = pd.to_numeric(df[cols["lon"]], errors="coerce").to_numpy()
+        lat = pd.to_numeric(df[cols["lat"]], errors="coerce").to_numpy()
+        xx, yy = tr.transform(lon, lat)
+        out["x"] = xx
+        out["y"] = yy
+    else:
+        raise SystemExit(f"Competitor structure CSV needs x/y, easting/northing or lat/lon columns: {path}")
+    out = out[np.isfinite(out["x"]) & np.isfinite(out["y"])].copy()
+    if circuit:
+        out = out[~out["circuit"].astype(str).str.upper().eq(str(circuit).upper())]
+    return out.reset_index(drop=True)
+
+
+def _project_points_median(xyz: np.ndarray, camera_xyz, cam: dict, max_points: int = 3000):
+    if xyz is None or len(xyz) == 0 or cam is None:
+        return None
+    pts = np.asarray(xyz, dtype=float)
+    if len(pts) > max_points:
+        idx = np.linspace(0, len(pts) - 1, max_points).round().astype(int)
+        pts = pts[idx]
+    uv, valid = project_xyz_array_to_pixels(pts, camera_xyz, cam)
+    uv = uv[valid]
+    if len(uv) < 3:
+        return None
+    return float(np.median(uv[:, 0])), float(np.median(uv[:, 1]))
+
+
+def _lidar_clusters_around(lidar_context: dict, x: float, y: float, radius: float,
+                           cell_size: float, min_points: int, cache: dict) -> list[dict]:
+    key = (round(float(x), 1), round(float(y), 1), round(float(radius), 1))
+    if key in cache:
+        return cache[key]
+    sc = lidar_context.get("structure_class")
+    if sc is None:
+        cache[key] = []
+        return []
+    acc = lidar_context["accessor"]
+    a = acc.query_radius(float(x), float(y), float(radius), [int(sc)])
+    if len(a["z"]) == 0:
+        cache[key] = []
+        return []
+    xyz = np.column_stack([a["x"], a["y"], a["z"]])
+    gz, _ = acc.ground_z(float(x), float(y), lidar_context["ground_class"], lidar_context["ground_radius"])
+    if gz is not None:
+        m = xyz[:, 2] >= float(gz) + max(2.0, lidar_context["min_height"] * 0.15)
+        if np.any(m):
+            xyz = xyz[m]
+    clusters = sdet.cluster_tower_points(
+        xyz, cell_size=cell_size, min_points=min_points,
+        min_vertical_range=max(5.0, 0.8 * float(lidar_context["min_height"])),
+    )
+    cache[key] = clusters
+    return clusters
+
+
+def _draw_detection_debug_v15(im, sw, sh, dest: Path, *, raw_prior=None, prior=None, roi=None,
+                              row_raw=(), row_plausible=(), competitors=(), gate_px=None,
+                              chosen_box=None, crop_box=None, tile_box=None, staking_base=None,
+                              title: str = ""):
+    from PIL import Image, ImageDraw
+    dbg = im.copy()
+    dbg.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+    sxr, syr = dbg.size[0] / sw, dbg.size[1] / sh
+    draw = ImageDraw.Draw(dbg)
+    w = max(2, int(round(dbg.size[0] / 700)))
+    rr = max(4, int(round(dbg.size[0] / 400)))
+
+    def cross(pt, colour, size=rr):
+        if pt is None:
+            return
+        px, py = pt[0] * sxr, pt[1] * syr
+        draw.line((px - size, py, px + size, py), fill=colour, width=w)
+        draw.line((px, py - size, px, py + size), fill=colour, width=w)
+
+    if roi is not None:
+        rx0, ry0, rx1, ry1 = roi
+        draw.rectangle((rx0 * sxr, ry0 * syr, rx1 * sxr, ry1 * syr), outline=(0, 255, 255), width=max(w, 3))
+    for d in row_raw:
+        bx0, by0, bx1, by1 = d["box"]
+        draw.rectangle((bx0 * sxr, by0 * syr, bx1 * sxr, by1 * syr), outline=(180, 0, 180), width=max(1, w - 1))
+    for d in row_plausible:
+        bx0, by0, bx1, by1 = d["box"]
+        draw.rectangle((bx0 * sxr, by0 * syr, bx1 * sxr, by1 * syr), outline=(255, 0, 255), width=w)
+    if prior is not None and gate_px is not None and math.isfinite(gate_px):
+        gr = gate_px * 0.5 * (sxr + syr)
+        px, py = prior[0] * sxr, prior[1] * syr
+        draw.ellipse((px - gr, py - gr, px + gr, py + gr), outline=(0, 200, 255), width=max(1, w - 1))
+    if tile_box is not None:
+        tx0, ty0, tx1, ty1 = tile_box
+        draw.rectangle((tx0 * sxr, ty0 * syr, tx1 * sxr, ty1 * syr), outline=(255, 180, 0), width=w)
+    if chosen_box is not None:
+        bx0, by0, bx1, by1 = chosen_box
+        draw.rectangle((bx0 * sxr, by0 * syr, bx1 * sxr, by1 * syr), outline=(0, 255, 0), width=max(w, 3))
+    if crop_box is not None:
+        cx0, cy0, cx1, cy1 = crop_box
+        draw.rectangle((cx0 * sxr, cy0 * syr, cx1 * sxr, cy1 * syr), outline=(255, 255, 255), width=max(w, 3))
+    cross(raw_prior, (150, 150, 150))          # grey: raw geometry prior
+    for c in competitors:                      # red: competitor hypotheses
+        cross(c, (255, 40, 40), int(rr * 1.4))
+    cross(staking_base, (255, 255, 0))         # yellow: projected staking base
+    cross(prior, (255, 255, 255), int(rr * 1.4))  # white: bias-corrected prior
+    if title:
+        draw.rectangle((0, 0, dbg.size[0], 34), fill=(0, 0, 0))
+        draw.text((10, 8), title, fill=(255, 255, 255))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dbg.save(dest, "JPEG", quality=88, optimize=True)
+
+
+def render_candidate_products_and_crops_v15(
+    manifest: pd.DataFrame,
+    crop_candidates: pd.DataFrame,
+    footprints: gpd.GeoDataFrame,
+    out_dir: Path,
+    circuit: str,
+    reference_mode: str,
+    opk_convention: str,
+    render_mode: str,
+    preview_max_dimension: int,
+    jpeg_quality: int,
+    crop_padding_factor: float,
+    crop_min_size: int,
+    crop_max_dimension: int,
+    render_other_views: bool,
+    skip_structure_crops: bool,
+    render_limit: int | None,
+    crop_qa_limit: int | None,
+    crop_qa_review_limit: int | None,
+    lidar_context: dict | None,
+    det_cfg: dict,
+    competitor_structures: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """v0.15 structure detection.
+
+    Differences from v0.14:
+    - competitor hypotheses (LiDAR tower clusters + optional neighbour-circuit CSV) are projected with
+      the same camera model; detections are owned by the nearest hypothesis;
+    - per-pass online prior-bias calibration from confident detections;
+    - tile-edge artefact rejection and containment NMS;
+    - explicit AMBIGUOUS / COMPETITOR statuses; DINO template updated only from confident matches;
+    - images outside the product manifest (crossing/side views) are processed with --render-other-views;
+    - rows not processed because of --render-limit are marked NOT_IN_RENDER_SUBSET;
+    - camera-model quality, projected staking base and detection residuals are persisted for
+      catalogue building and georeference validation.
+    """
+    from PIL import Image, ImageOps
+    Image.MAX_IMAGE_PIXELS = None
+    c = det_cfg
+    man = manifest.copy()
+    crops = _ensure_v15_crop_columns(crop_candidates)
+    meta = {
+        "detection_module_version": sdet.DETECTION_MODULE_VERSION,
+        "model": c["model"], "backend": c["backend"], "device": None,
+        "prompts": list(c["prompts"]), "threshold": float(c["threshold"]),
+        "text_threshold": float(c["text_threshold"]), "tile_size": int(c["tile_size"]),
+        "tile_overlap": float(c["tile_overlap"]), "tile_batch_size": int(c["tile_batch_size"]),
+        "max_tiles_per_image": c["max_tiles"],
+        "nms": {"iou": float(c["nms_iou"]), "iomin": float(c["nms_iomin"])},
+        "tile_artifact_fraction": float(c["tile_artifact_fraction"]),
+        "local_roi": {"radius_fraction": float(c["roi_radius_fraction"]), "min_radius_px": int(c["roi_min_radius"]),
+                      "max_radius_px": int(c["roi_max_radius"]), "full_image_fallback": False},
+        "assignment": {
+            "gate_fraction": float(c["gate_fraction"]), "min_score": float(c["min_assignment_score"]),
+            "min_ownership": float(c["min_ownership"]), "ownership_sigma_fraction": float(c["ownership_sigma_fraction"]),
+            "ambiguity_margin": float(c["ambiguity_margin"]),
+        },
+        "competitors": {
+            "lidar_enabled": bool(c["lidar_competitors"]), "radius": float(c["competitor_radius"]),
+            "csv_rows": int(0 if competitor_structures is None else len(competitor_structures)),
+        },
+        "registration": {"enabled": bool(c["registration"]), "sigma_fraction": float(c["registration_sigma_fraction"]),
+                         "min_matched": int(c["registration_min_matched"]), "min_margin": float(c["registration_min_margin"])},
+        "bias_calibration": {"enabled": bool(c["bias_calibration"]), "window": int(c["bias_window"]),
+                             "min_samples": int(c["bias_min_samples"])},
+        "dino_tracking": bool(c["dino_enabled"]),
+        "membership_effect": "CROPS_ONLY_NEVER_CHANGES_SEQUENCE",
+    }
+    if man.empty and crops.empty:
+        return man, crops, meta
+
+    detector = None; detector_error = None; dino_state = None; dino_error = None
+    if not skip_structure_crops:
+        try:
+            detector = _load_tower_detector_v12(c["model"], c["device"], c["backend"])
+            meta["device"] = detector.get("device_name")
+            meta["backend_resolved"] = detector.get("backend")
+        except Exception as exc:
+            detector_error = f"{type(exc).__name__}: {exc}"; meta["load_error"] = detector_error
+            print(f"  WARNING: tower detector failed to load: {detector_error}")
+        if c["dino_enabled"]:
+            try:
+                dino_state = _load_dinov3_model(c["dino_model"], c["dino_device"])
+                meta["dino_model"] = c["dino_model"]; meta["dino_device"] = str(dino_state[3])
+            except Exception as exc:
+                dino_error = f"{type(exc).__name__}: {exc}"; meta["dino_load_error"] = dino_error
+
+    fp_lookup = {str(r.filename): r.geometry for _, r in footprints.iterrows() if pd.notna(r.filename)}
+    product_root = out_dir / "163_candidate"; crop_root = out_dir / "structure_crops"
+    qa_root = out_dir / "qa" / "structure_detection"
+    product_root.mkdir(parents=True, exist_ok=True)
+    if not skip_structure_crops:
+        crop_root.mkdir(parents=True, exist_ok=True)
+        qa_root.mkdir(parents=True, exist_ok=True)
+        if detector_error:
+            (qa_root / "DETECTOR_LOAD_FAILED.txt").write_text(
+                f"Tower detector could not be loaded.\n\nmodel={c['model']}\nbackend={c['backend']}\n"
+                f"device={c['device']}\n\n{detector_error}\n", encoding="utf-8")
+
+    # Processing order: product frames in manifest order (acquisition order by default), then
+    # additional crop-only images (crossing/side views) when requested. Acquisition order matters for
+    # the online bias tracker and DINO structure tracking.
+    manifest_names = list(dict.fromkeys(man["filename"].astype(str))) if not man.empty else []
+    if render_limit is not None:
+        manifest_names = manifest_names[:max(0, int(render_limit))]
+    extra_names: list[str] = []
+    if render_other_views and not skip_structure_crops and not crops.empty:
+        extra = crops[~crops["filename"].astype(str).isin(set(man["filename"].astype(str)) if not man.empty else set())]
+        if not extra.empty:
+            order_cols = [x for x in ["pass_id", "filename"] if x in extra.columns]
+            extra_names = list(dict.fromkeys(extra.sort_values(order_cols)["filename"].astype(str)))
+            if render_limit is not None:
+                extra_names = extra_names[:max(0, int(render_limit))]
+    process_names = manifest_names + [n for n in extra_names if n not in set(manifest_names)]
+    processed: set[str] = set()
+
+    man_groups = {str(k): g.index.tolist() for k, g in man.groupby("filename", sort=False)} if not man.empty else {}
+    crop_groups = {str(k): g.index.tolist() for k, g in crops.groupby("filename", sort=False)} if not crops.empty else {}
+
+    cloud_cache: dict = {}; cluster_cache: dict = {}; tracker_embeddings: dict = {}
+    bias = sdet.PriorBiasTracker(window=int(c["bias_window"]), min_samples=int(c["bias_min_samples"]))
+    qa_ok_rendered = 0; qa_review_rendered = 0
+    image_detection_meta = []
+    comp_df = competitor_structures if competitor_structures is not None else pd.DataFrame(columns=["competitor_id", "x", "y"])
+    comp_xy = comp_df[["x", "y"]].to_numpy(dtype=float) if not comp_df.empty else np.empty((0, 2))
+
+    def qa_allowed(review: bool) -> bool:
+        if review:
+            return crop_qa_review_limit is None or qa_review_rendered < int(crop_qa_review_limit)
+        return crop_qa_limit is None or qa_ok_rendered < int(crop_qa_limit)
+
+    total = len(process_names)
+    for n_img, filename in enumerate(process_names, start=1):
+        midx = man_groups.get(filename, [])
+        cidx = crop_groups.get(filename, [])
+        if midx:
+            src = Path(str(man.loc[midx[0], "raw_path"]))
+        elif cidx:
+            src = Path(str(crops.loc[cidx[0], "raw_path"]))
+        else:
+            continue
+        processed.add(filename)
+        if not src.exists():
+            if midx:
+                man.loc[midx, "render_status"] = "SOURCE_MISSING"
+            if cidx:
+                crops.loc[cidx, "crop_render_status"] = "SOURCE_MISSING"
+            continue
+        print(f"    [{n_img}/{total}] {filename}", end="\r", flush=True)
+        try:
+            with Image.open(src) as im0:
+                im = ImageOps.exif_transpose(im0).convert("RGB"); sw, sh = im.size
+                if midx:
+                    man.loc[midx, "source_width"] = sw; man.loc[midx, "source_height"] = sh
+
+                if not skip_structure_crops and cidx:
+                    eligible = []; ctx: dict = {}
+                    for ci in cidx:
+                        cr = crops.loc[ci]
+                        crops.at[ci, "source_width"] = sw; crops.at[ci, "source_height"] = sh
+                        crops.at[ci, "tower_detector_model"] = c["model"]
+                        crops.at[ci, "tower_detector_backend"] = detector.get("backend") if detector else c["backend"]
+                        if not bool(cr.get("render_by_default")) and not render_other_views:
+                            crops.at[ci, "crop_render_status"] = "NOT_RENDERED_OTHER_VIEW"; continue
+                        if detector is None:
+                            for col in ["tower_detector_status", "crop_projection_status", "crop_render_status"]:
+                                crops.at[ci, col] = "DETECTOR_LOAD_FAILED"
+                            continue
+                        raw_prior, cam, cloud = _rough_geometry_prior_for_structure(
+                            cr, fp_lookup.get(filename), sw, sh, lidar_context, opk_convention, cloud_cache)
+                        camera_xyz = None
+                        if cam is not None:
+                            camera_xyz = (float(cr.camera_x), float(cr.camera_y), float(cr.camera_z))
+                            crops.at[ci, "camera_model_type"] = "LIDAR_GROUNDED_AFFINE_RAYS"
+                            crops.at[ci, "camera_model_quality"] = cam.get("quality")
+                            crops.at[ci, "camera_reprojection_rms_px"] = cam.get("rms_px")
+                            crops.at[ci, "camera_reprojection_rms_fraction"] = cam.get("rms_fraction")
+                            crops.at[ci, "camera_center_offset_fraction"] = cam.get("center_offset_fraction")
+                            crops.at[ci, "footprint_corner_order"] = cam.get("corner_order")
+                        if cloud is not None:
+                            if lidar_context is not None:
+                                crops.at[ci, "lidar_ground_class"] = lidar_context.get("ground_class")
+                                crops.at[ci, "lidar_structure_class"] = lidar_context.get("structure_class")
+                            if cloud.get("ground_z") is not None:
+                                crops.at[ci, "lidar_ground_z"] = cloud.get("ground_z")
+                            if cloud.get("status") == "OK":
+                                crops.at[ci, "lidar_structure_base_z"] = cloud.get("base_z")
+                                crops.at[ci, "lidar_structure_top_z"] = cloud.get("top_z")
+                                crops.at[ci, "lidar_structure_height"] = cloud.get("height")
+                                crops.at[ci, "lidar_structure_point_count"] = len(cloud.get("xyz", []))
+                        # Projected staking base (independent of LiDAR structure class) for georef QA.
+                        staking_base = None
+                        if cam is not None and cloud is not None and cloud.get("ground_z") is not None:
+                            uv, valid = project_xyz_array_to_pixels(
+                                np.array([[float(cr.x), float(cr.y), float(cloud["ground_z"])]]), camera_xyz, cam)
+                            if valid.any():
+                                staking_base = (float(uv[0, 0]), float(uv[0, 1]))
+                                crops.at[ci, "staking_base_x_px"] = staking_base[0]
+                                crops.at[ci, "staking_base_y_px"] = staking_base[1]
+                        bias_key = str(cr.get("pass_id")) if pd.notna(cr.get("pass_id")) else str(cr.get("circuit_run_id"))
+                        b = bias.get(bias_key) if c["bias_calibration"] else {"dx": 0.0, "dy": 0.0, "n": 0, "spread": float("nan"), "source": "DISABLED"}
+                        prior = sdet.apply_bias(raw_prior, b)
+                        roi = None
+                        if raw_prior is not None:
+                            crops.at[ci, "geometry_prior_raw_x_px"] = raw_prior[0]; crops.at[ci, "geometry_prior_raw_y_px"] = raw_prior[1]
+                            crops.at[ci, "geometry_prior_x_px"] = prior[0]; crops.at[ci, "geometry_prior_y_px"] = prior[1]
+                            crops.at[ci, "prior_bias_dx_px"] = b["dx"]; crops.at[ci, "prior_bias_dy_px"] = b["dy"]
+                            crops.at[ci, "prior_bias_n"] = b["n"]; crops.at[ci, "prior_bias_spread_px"] = b["spread"]
+                            crops.at[ci, "prior_bias_source"] = b["source"]
+                            roi = _build_structure_search_roi_v14(prior, sw, sh, c["roi_radius_fraction"], c["roi_min_radius"], c["roi_max_radius"])
+                            if roi is not None:
+                                rx0, ry0, rx1, ry1 = roi
+                                crops.at[ci, "tower_roi_radius_px"] = 0.5 * max(rx1 - rx0, ry1 - ry0)
+                                crops.at[ci, "tower_roi_diag_px"] = math.hypot(rx1 - rx0, ry1 - ry0)
+                                crops.at[ci, "tower_search_xmin"] = rx0; crops.at[ci, "tower_search_ymin"] = ry0
+                                crops.at[ci, "tower_search_xmax"] = rx1; crops.at[ci, "tower_search_ymax"] = ry1
+                                crops.at[ci, "tower_search_mode"] = "LOCAL_GEOMETRY_ROI"
+                                crops.at[ci, "tower_detection_mode"] = "LOCAL_ROI_COMPETITOR_AWARE_V15"
+                        eligible.append(ci)
+                        ctx[ci] = {"raw_prior": raw_prior, "prior": prior, "roi": roi, "cam": cam,
+                                   "camera_xyz": camera_xyz, "bias": b, "bias_key": bias_key,
+                                   "staking_base": staking_base, "competitors": []}
+
+                    # ---- competitor hypotheses ------------------------------------------------
+                    target_xys = [(float(crops.at[ci, "x"]), float(crops.at[ci, "y"])) for ci in eligible
+                                  if pd.notna(crops.at[ci, "x"]) and pd.notna(crops.at[ci, "y"])]
+                    struct_r = float(lidar_context["structure_radius"]) if lidar_context else float(c["competitor_radius"]) / 5.5
+                    seen_comp_world: set = set()
+                    hypotheses: list = []
+                    for ci in eligible:
+                        k = ctx[ci]
+                        if k["prior"] is None:
+                            continue
+                        hypotheses.append(sdet.Hypothesis(f"T:{ci}", k["prior"], "TARGET", str(crops.at[ci, "structure_id"])))
+                        if k["cam"] is None:
+                            continue
+                        sx, sy = float(crops.at[ci, "x"]), float(crops.at[ci, "y"])
+                        comp_points = []  # (label, world_key, xyz)
+                        if c["lidar_competitors"] and lidar_context is not None:
+                            clusters = _lidar_clusters_around(lidar_context, sx, sy, c["competitor_radius"],
+                                                              c["cluster_cell_size"] or struct_r / 9.0,
+                                                              c["cluster_min_points"], cluster_cache)
+                            tgt_cluster, comps = sdet.split_target_and_competitors(
+                                clusters, (sx, sy), struct_r, target_xys, struct_r)
+                            crops.at[ci, "tower_lidar_cluster_count"] = len(clusters)
+                            crops.at[ci, "tower_target_cluster_found"] = "YES" if tgt_cluster is not None else "NO"
+                            for cl in comps:
+                                comp_points.append((f"LIDAR@{cl['x']:.0f},{cl['y']:.0f}", (round(cl["x"] / struct_r), round(cl["y"] / struct_r)), cl["xyz"]))
+                        if len(comp_xy):
+                            d = np.hypot(comp_xy[:, 0] - sx, comp_xy[:, 1] - sy)
+                            for j in np.where(d <= float(c["competitor_radius"]))[0]:
+                                cx_, cy_ = float(comp_xy[j, 0]), float(comp_xy[j, 1])
+                                if any(math.hypot(cx_ - tx, cy_ - ty) <= struct_r for tx, ty in target_xys):
+                                    continue
+                                wkey = (round(cx_ / struct_r), round(cy_ / struct_r))
+                                if any(abs(wkey[0] - p[1][0]) <= 1 and abs(wkey[1] - p[1][1]) <= 1 for p in comp_points):
+                                    continue  # already represented by a LiDAR cluster
+                                gz = None
+                                if lidar_context is not None:
+                                    gz, _ = lidar_context["accessor"].ground_z(cx_, cy_, lidar_context["ground_class"], lidar_context["ground_radius"])
+                                if gz is None:
+                                    gz = float(crops.at[ci, "lidar_ground_z"]) if pd.notna(crops.at[ci, "lidar_ground_z"]) else None
+                                if gz is None:
+                                    continue
+                                h = float(crops.at[ci, "lidar_structure_height"]) if pd.notna(crops.at[ci, "lidar_structure_height"]) else 2.0 * float(c["competitor_default_half_height"])
+                                zs = np.linspace(gz + 0.05 * h, gz + h, 12)
+                                xyz = np.column_stack([np.full(12, cx_), np.full(12, cy_), zs])
+                                comp_points.append((f"CSV:{comp_df.iloc[j]['competitor_id']}", wkey, xyz))
+                        for n_c, (label, wkey, xyz) in enumerate(comp_points):
+                            if wkey in seen_comp_world:
+                                continue
+                            raw_uv = _project_points_median(xyz, k["camera_xyz"], k["cam"])
+                            if raw_uv is None:
+                                continue
+                            seen_comp_world.add(wkey)
+                            uv = sdet.apply_bias(raw_uv, k["bias"])
+                            hypotheses.append(sdet.Hypothesis(f"C:{ci}:{n_c}", uv, "COMPETITOR", label))
+                            k["competitors"].append((label, uv))
+                    for ci in eligible:
+                        k = ctx[ci]
+                        crops.at[ci, "competitor_hypothesis_count"] = len(k["competitors"])
+                        if k["prior"] is not None and k["competitors"]:
+                            dists = [(math.hypot(uv[0] - k["prior"][0], uv[1] - k["prior"][1]), lab) for lab, uv in k["competitors"]]
+                            dmin, lab = min(dists)
+                            crops.at[ci, "competitor_nearest_prior_distance_px"] = dmin
+                            crops.at[ci, "competitor_nearest_label"] = lab
+
+                    # ---- detection --------------------------------------------------------------
+                    roi_boxes = [ctx[ci]["roi"] for ci in eligible if ctx[ci]["roi"] is not None]
+                    raw_dets = []; image_dets = []; rejected = []
+                    detect_meta = {"tile_count": 0, "tiles_with_detections": 0, "search_mode": "LOCAL_GEOMETRY_ROI",
+                                   "roi_count": len(roi_boxes), "backend": detector.get("backend") if detector else None}
+                    if eligible and detector is not None and roi_boxes:
+                        try:
+                            # NMS inside the v14 runner is disabled (iou=1.01) so v15 can drop tile
+                            # artefacts *before* they suppress real boxes.
+                            raw_dets, detect_meta = _run_local_roi_tower_detector_v14(
+                                detector, im, c["prompts"], c["threshold"], c["text_threshold"],
+                                c["tile_size"], c["tile_overlap"], c["tile_batch_size"], c["max_tiles"],
+                                roi_boxes, 1.01, 100000,
+                            )
+                            no_art, art_rej = sdet.filter_tile_artifacts(raw_dets, c["tile_artifact_fraction"])
+                            merged = sdet.containment_nms(no_art, c["nms_iou"], c["nms_iomin"], c["max_boxes"])
+                            image_dets, rej = _filter_tower_detections_v14(
+                                merged, sw, sh, roi_boxes,
+                                c["min_aspect"], c["max_aspect"], c["max_area_fraction"], c["max_width_fraction"],
+                                c["max_height_fraction"], c["max_roi_area_fraction"], c["max_roi_width_fraction"],
+                                c["max_roi_height_fraction"],
+                            )
+                            rejected = art_rej + rej
+                            detect_meta["tile_artifacts_rejected"] = len(art_rej)
+                            detect_meta["merged_detection_count"] = len(merged)
+                        except Exception as exc:
+                            for ci in eligible:
+                                for col in ["tower_detector_status", "crop_projection_status", "crop_render_status"]:
+                                    crops.at[ci, col] = f"DETECTOR_ERROR:{type(exc).__name__}"
+                            image_detection_meta.append({"filename": filename, "error": f"{type(exc).__name__}: {exc}"})
+                            raw_dets = []; image_dets = []; rejected = []
+                    image_detection_meta.append({"filename": filename, **detect_meta,
+                                                 "plausible_detection_count": len(image_dets),
+                                                 "rejected_detection_count": len(rejected)})
+
+                    # ---- joint registration of hypotheses to detections ---------------------------
+                    diags = [math.hypot(ctx[ci]["roi"][2] - ctx[ci]["roi"][0], ctx[ci]["roi"][3] - ctx[ci]["roi"][1])
+                             for ci in eligible if ctx[ci]["roi"] is not None]
+                    med_diag = float(np.median(diags)) if diags else float("nan")
+                    reg = sdet.Registration(status="DISABLED" if not c["registration"] else "NOT_RUN")
+                    if c["registration"] and image_dets and diags:
+                        spreads = [ctx[ci]["bias"].get("spread", float("nan")) for ci in eligible]
+                        sp = float(np.nanmedian(spreads)) if any(math.isfinite(x) for x in spreads) else float("nan")
+                        reg = sdet.estimate_image_translation(
+                            hypotheses, [d["box"] for d in image_dets], [d.get("score", 0.0) for d in image_dets],
+                            c["registration_sigma_fraction"] * med_diag, c["gate_fraction"] * med_diag,
+                            c["registration_min_matched"], c["registration_min_margin"],
+                            (0.0, 0.0), (3.0 * sp if math.isfinite(sp) and sp > 0 else None),
+                        )
+                    own_sigma_scale = 1.0
+                    if reg.accepted:
+                        hypotheses = sdet.shift_hypotheses(hypotheses, reg.dx, reg.dy)
+                        own_sigma_scale = 0.5
+                        for ci in eligible:
+                            k = ctx[ci]
+                            if k["prior"] is not None:
+                                k["prior"] = (k["prior"][0] + reg.dx, k["prior"][1] + reg.dy)
+                            k["competitors"] = [(lab, (uv[0] + reg.dx, uv[1] + reg.dy)) for lab, uv in k["competitors"]]
+                    for ci in eligible:
+                        crops.at[ci, "image_registration_status"] = reg.status
+                        crops.at[ci, "image_registration_dx_px"] = reg.dx
+                        crops.at[ci, "image_registration_dy_px"] = reg.dy
+                        crops.at[ci, "image_registration_support"] = reg.support
+                        crops.at[ci, "image_registration_second_support"] = reg.second_support
+                        crops.at[ci, "image_registration_matched"] = reg.matched_hypotheses
+                        if reg.accepted and ctx[ci]["prior"] is not None:
+                            crops.at[ci, "geometry_prior_x_px"] = ctx[ci]["prior"][0]
+                            crops.at[ci, "geometry_prior_y_px"] = ctx[ci]["prior"][1]
+
+                    # ---- scoring -----------------------------------------------------------------
+                    pairs = []; gate_counts = {ci: 0 for ci in eligible}; plaus_counts = {}
+                    emb_cache: dict = {}; pair_extra: dict = {}
+                    for ci in eligible:
+                        k = ctx[ci]; roi = k["roi"]
+                        row_raw = [d for d in raw_dets if _box_center_in_roi_v14(d, roi)] if roi is not None else []
+                        row_pl = [d for d in image_dets if _box_center_in_roi_v14(d, roi)] if roi is not None else []
+                        plaus_counts[ci] = len(row_pl)
+                        crops.at[ci, "tower_tile_count"] = detect_meta.get("tile_count", 0)
+                        crops.at[ci, "tower_tiles_with_detections"] = detect_meta.get("tiles_with_detections", 0)
+                        crops.at[ci, "tower_tile_size"] = c["tile_size"]; crops.at[ci, "tower_tile_overlap"] = c["tile_overlap"]
+                        crops.at[ci, "tower_raw_image_detection_count"] = len(row_raw)
+                        crops.at[ci, "tower_plausible_detection_count"] = len(row_pl)
+                        crops.at[ci, "tower_image_detection_count"] = len(row_pl)
+                        if roi is None or k["prior"] is None:
+                            continue
+                        roi_diag = math.hypot(roi[2] - roi[0], roi[3] - roi[1])
+                        crops.at[ci, "tower_gate_radius_px"] = float(c["gate_fraction"]) * roi_diag
+                        structure_key = str(crops.at[ci, "structure_id"] or crops.at[ci, "structure_idx"])
+                        prev_emb = tracker_embeddings.get(structure_key)
+                        for di, d in enumerate(image_dets):
+                            if not _box_center_in_roi_v14(d, roi):
+                                continue
+                            gate_ok, box_dist, centre_dist = _tower_assignment_gate_v14(d, k["prior"], roi_diag, c["gate_fraction"])
+                            if not gate_ok:
+                                continue
+                            gate_counts[ci] += 1
+                            own = sdet.ownership_probabilities(d["box"], hypotheses, own_sigma_scale * c["ownership_sigma_fraction"] * roi_diag)
+                            owner = max(own, key=own.get) if own else f"T:{ci}"
+                            dsim = float("nan")
+                            if prev_emb is not None and dino_state is not None:
+                                if di not in emb_cache:
+                                    x0, y0, x1, y1 = [int(round(v)) for v in d["box"]]
+                                    x0, y0 = max(0, x0), max(0, y0); x1, y1 = min(sw, x1), min(sh, y1)
+                                    emb_cache[di] = _dino_global_embedding_from_pil(im.crop((x0, y0, x1, y1)), dino_state) if x1 > x0 and y1 > y0 else None
+                                if emb_cache[di] is not None:
+                                    dsim = float(np.clip(np.dot(prev_emb, emb_cache[di]), -1.0, 1.0))
+                            geom_abs = sdet.gaussian_geometry(centre_dist, 0.22 * roi_diag)
+                            final = sdet.score_candidate_v15(d.get("score", 0.0), own.get(f"T:{ci}", 0.0), geom_abs,
+                                                            dsim, bool(d.get("edge_touch", 0)))
+                            pairs.append(sdet.PairCandidate(f"T:{ci}", di, final, own.get(f"T:{ci}", 0.0), owner,
+                                                            float(d.get("score", 0.0)), centre_dist, box_dist, dsim,
+                                                            sdet.box_center(d["box"])))
+                    assigned, unassigned_status = sdet.resolve_assignments(
+                        pairs, c["min_assignment_score"], c["min_ownership"], c["ambiguity_margin"],
+                        c["ambiguity_min_separation_px"])
+                    by_target_scores: dict = {}
+                    for p in pairs:
+                        if p.owner_key == p.target_key:
+                            by_target_scores.setdefault(p.target_key, []).append(p.final)
+
+                    # ---- outputs -----------------------------------------------------------------
+                    for ci in eligible:
+                        k = ctx[ci]; tkey = f"T:{ci}"
+                        roi = k["roi"]
+                        row_raw = [d for d in raw_dets if _box_center_in_roi_v14(d, roi)] if roi is not None else []
+                        row_pl = [d for d in image_dets if _box_center_in_roi_v14(d, roi)] if roi is not None else []
+                        gate_px = (float(c["gate_fraction"]) * math.hypot(roi[2] - roi[0], roi[3] - roi[1])) if roi is not None else None
+                        crops.at[ci, "tower_gate_candidate_count"] = gate_counts.get(ci, 0)
+                        comps_uv = [uv for _, uv in k["competitors"]]
+                        sid_tok = _clean_token(crops.at[ci, "structure_id"], "structure")
+                        stem = Path(filename).stem
+                        if tkey not in assigned:
+                            if k["prior"] is None or roi is None:
+                                status = "NO_GEOMETRY_PRIOR"
+                            elif plaus_counts.get(ci, 0) == 0:
+                                status = "NO_PLAUSIBLE_DETECTIONS_IN_ROI"
+                            elif gate_counts.get(ci, 0) == 0:
+                                status = "NO_DETECTION_IN_GEOMETRY_GATE"
+                            else:
+                                status = unassigned_status.get(tkey, "NO_VISUAL_DETECTION")
+                            crops.at[ci, "tower_assignment_status"] = status
+                            crops.at[ci, "tower_rejection_reason"] = status
+                            if str(crops.at[ci, "crop_render_status"]) == "NOT_RUN":
+                                for col in ["tower_detector_status", "crop_projection_status", "crop_render_status"]:
+                                    crops.at[ci, col] = status
+                            review = status in {"AMBIGUOUS_ASSIGNMENT", "REJECTED_COMPETITOR_OWNED", "LOW_ASSIGNMENT_SCORE"}
+                            crops.at[ci, "tower_qa_reason"] = status
+                            if qa_allowed(review):
+                                qdest = qa_root / ("review" if review else "no_crop") / f"{status}__{stem}__{sid_tok}.jpg"
+                                _draw_detection_debug_v15(im, sw, sh, qdest, raw_prior=k["raw_prior"], prior=k["prior"], roi=roi,
+                                                          row_raw=row_raw, row_plausible=row_pl, competitors=comps_uv,
+                                                          gate_px=gate_px, staking_base=k["staking_base"],
+                                                          title=f"{status} | {crops.at[ci, 'structure_id']} | {filename}")
+                                crops.at[ci, "crop_debug_path"] = str(qdest)
+                                if review: qa_review_rendered += 1
+                                else: qa_ok_rendered += 1
+                            continue
+
+                        p = assigned[tkey]
+                        chosen = image_dets[p.det_index]; box = chosen["box"]
+                        crop_box = _expand_detection_box(box, sw, sh, crop_padding_factor, crop_min_size)
+                        if crop_box is None:
+                            for col in ["tower_detector_status", "crop_projection_status", "crop_render_status"]:
+                                crops.at[ci, col] = "DETECTION_BOX_FAILED"
+                            continue
+                        scores = sorted(by_target_scores.get(tkey, []), reverse=True)
+                        margin = (scores[0] - scores[1]) if len(scores) > 1 else float("nan")
+                        confidence = "HIGH" if (p.ownership >= 0.80 and p.final >= 0.55 and (not math.isfinite(margin) or margin >= 0.10)) else "MEDIUM"
+                        cx, cy = sdet.box_center(box)
+                        crops.at[ci, "tower_detector_status"] = "OK_VISUAL_DETECTION"
+                        crops.at[ci, "tower_assignment_status"] = "ASSIGNED_COMPETITOR_AWARE"
+                        crops.at[ci, "tower_assignment_confidence"] = confidence
+                        crops.at[ci, "tower_rejection_reason"] = ""
+                        crops.at[ci, "tower_ownership"] = p.ownership
+                        crops.at[ci, "tower_owner_key"] = p.owner_key
+                        crops.at[ci, "tower_assignment_margin"] = margin
+                        crops.at[ci, "tower_detector_score"] = float(chosen.get("score", 0.0))
+                        crops.at[ci, "tower_detector_final_score"] = float(p.final)
+                        crops.at[ci, "tower_detector_label"] = str(chosen.get("label", "tower"))
+                        crops.at[ci, "tower_dino_similarity"] = p.dino_sim
+                        crops.at[ci, "geometry_prior_distance_px"] = p.centre_dist
+                        crops.at[ci, "tower_prior_center_distance_px"] = p.centre_dist
+                        crops.at[ci, "tower_prior_box_distance_px"] = p.box_dist
+                        for src_k, dst_k in [("area_fraction", "tower_box_area_fraction"), ("width_fraction", "tower_box_width_fraction"),
+                                             ("height_fraction", "tower_box_height_fraction"), ("aspect_ratio", "tower_box_aspect_ratio"),
+                                             ("roi_area_fraction", "tower_box_roi_area_fraction"), ("roi_width_fraction", "tower_box_roi_width_fraction"),
+                                             ("roi_height_fraction", "tower_box_roi_height_fraction")]:
+                            crops.at[ci, dst_k] = chosen.get(src_k)
+                        crops.at[ci, "tower_box_xmin"] = box[0]; crops.at[ci, "tower_box_ymin"] = box[1]
+                        crops.at[ci, "tower_box_xmax"] = box[2]; crops.at[ci, "tower_box_ymax"] = box[3]
+                        crops.at[ci, "crop_xmin"] = crop_box[0]; crops.at[ci, "crop_ymin"] = crop_box[1]
+                        crops.at[ci, "crop_xmax"] = crop_box[2]; crops.at[ci, "crop_ymax"] = crop_box[3]
+                        crops.at[ci, "projection_model"] = "LOCAL_GEOMETRY_ROI_VISUAL_DETECTION_V15"
+                        crops.at[ci, "crop_projection_confidence"] = "VISUAL"
+                        crops.at[ci, "tower_selected_tile_index"] = chosen.get("tile_index")
+                        tb = chosen.get("tile_box")
+                        if tb is not None:
+                            crops.at[ci, "tower_selected_tile_xmin"] = tb[0]; crops.at[ci, "tower_selected_tile_ymin"] = tb[1]
+                            crops.at[ci, "tower_selected_tile_xmax"] = tb[2]; crops.at[ci, "tower_selected_tile_ymax"] = tb[3]
+                        crops.at[ci, "tower_edge_touch"] = int(chosen.get("edge_touch", 0))
+                        # Residuals for georeference validation.
+                        base_x, base_y = cx, float(box[3])
+                        crops.at[ci, "detected_base_x_px"] = base_x; crops.at[ci, "detected_base_y_px"] = base_y
+                        if k["staking_base"] is not None:
+                            dx = base_x - k["staking_base"][0]; dy = base_y - k["staking_base"][1]
+                            crops.at[ci, "georef_residual_dx_px"] = dx; crops.at[ci, "georef_residual_dy_px"] = dy
+                            crops.at[ci, "georef_residual_px"] = math.hypot(dx, dy)
+                        if k["raw_prior"] is not None:
+                            dx = cx - k["raw_prior"][0]; dy = cy - k["raw_prior"][1]
+                            crops.at[ci, "prior_residual_dx_px"] = dx; crops.at[ci, "prior_residual_dy_px"] = dy
+                            crops.at[ci, "prior_residual_px"] = math.hypot(dx, dy)
+                            if (c["bias_calibration"] and p.ownership >= c["bias_min_ownership"]
+                                    and float(chosen.get("score", 0.0)) >= c["bias_min_detector_score"]
+                                    and not int(chosen.get("edge_touch", 0))):
+                                bias.add(k["bias_key"], dx, dy)
+                        structure_key = str(crops.at[ci, "structure_id"] or crops.at[ci, "structure_idx"])
+                        prev_emb = tracker_embeddings.get(structure_key)
+                        crops.at[ci, "tower_refine_status"] = (
+                            "DINO_TRACKED" if prev_emb is not None and math.isfinite(p.dino_sim) else
+                            ("DINO_TEMPLATE_CREATED" if dino_state is not None else "DETECTOR_ONLY"))
+                        if dino_state is not None and confidence == "HIGH":
+                            emb = emb_cache.get(p.det_index)
+                            if emb is None:
+                                x0, y0, x1, y1 = [int(round(v)) for v in box]
+                                x0, y0 = max(0, x0), max(0, y0); x1, y1 = min(sw, x1), min(sh, y1)
+                                if x1 > x0 and y1 > y0:
+                                    emb = _dino_global_embedding_from_pil(im.crop((x0, y0, x1, y1)), dino_state)
+                            if emb is not None:
+                                tracker_embeddings[structure_key] = emb
+
+                        crop_im = im.crop(crop_box)
+                        if crop_max_dimension and max(crop_im.size) > int(crop_max_dimension):
+                            crop_im.thumbnail((int(crop_max_dimension), int(crop_max_dimension)), Image.Resampling.LANCZOS)
+                        cr = crops.loc[ci]
+                        refidx = int(cr.reference_idx) if pd.notna(cr.get("reference_idx")) else int(cr.structure_idx)
+                        folder = f"{refidx:03d}_{sid_tok}"
+                        bucket = _clean_token(cr.get("crop_bucket"), "other_views")
+                        dest_dir = crop_root / folder / bucket; dest_dir.mkdir(parents=True, exist_ok=True)
+                        dest = dest_dir / f"{stem}.jpg"
+                        crop_im.save(dest, "JPEG", quality=int(jpeg_quality), optimize=True)
+                        crops.at[ci, "crop_path"] = str(dest)
+                        crops.at[ci, "crop_projection_status"] = "OK_VISUAL_DETECTION"
+                        crops.at[ci, "crop_render_status"] = "RENDERED"
+                        review = confidence != "HIGH"
+                        crops.at[ci, "tower_qa_reason"] = "MEDIUM_CONFIDENCE" if review else ""
+                        if qa_allowed(review):
+                            qdest = qa_root / ("review" if review else "ok") / f"{confidence}__{stem}__{sid_tok}.jpg"
+                            _draw_detection_debug_v15(im, sw, sh, qdest, raw_prior=k["raw_prior"], prior=k["prior"], roi=roi,
+                                                      row_raw=row_raw, row_plausible=row_pl, competitors=comps_uv, gate_px=gate_px,
+                                                      chosen_box=box, crop_box=crop_box, tile_box=tb, staking_base=k["staking_base"],
+                                                      title=f"{confidence} own={p.ownership:.2f} score={p.final:.2f} | {cr.get('structure_id')} | {filename}")
+                            crops.at[ci, "crop_debug_path"] = str(qdest)
+                            if review: qa_review_rendered += 1
+                            else: qa_ok_rendered += 1
+
+                if not midx:
+                    continue
+                if render_mode == "none":
+                    man.loc[midx, "render_status"] = "NOT_RENDERED"; continue
+                for mi in midx:
+                    row = man.loc[mi]; direction = str(row.get("product_direction") or "other").lower()
+                    dest_dir = product_root / direction; dest_dir.mkdir(parents=True, exist_ok=True)
+                    dest = dest_dir / str(row["generated_filename"])
+                    if render_mode == "preview":
+                        out_im = im.copy(); maxdim = max(256, int(preview_max_dimension))
+                        if max(out_im.size) > maxdim: out_im.thumbnail((maxdim, maxdim), Image.Resampling.LANCZOS)
+                    else:
+                        out_im = im.copy()
+                    out_im = annotate_product_image(out_im, reference_mode, row.get("reference_id"), circuit, row.get("capture_date_code"))
+                    out_im.save(dest, "JPEG", quality=int(jpeg_quality), optimize=True)
+                    man.at[mi, "render_status"] = "RENDERED_PREVIEW" if render_mode == "preview" else "RENDERED_FULL"
+                    man.at[mi, "rendered_path"] = str(dest); man.at[mi, "render_width"] = out_im.size[0]; man.at[mi, "render_height"] = out_im.size[1]
+        except Exception as exc:
+            if midx:
+                man.loc[midx, "render_status"] = f"ERROR:{type(exc).__name__}"
+            if cidx:
+                mask = crops.index.isin(cidx) & crops["crop_render_status"].eq("NOT_RUN")
+                crops.loc[mask, "crop_render_status"] = f"ERROR:{type(exc).__name__}"
+                meta.setdefault("image_errors", []).append({"filename": filename, "error": f"{type(exc).__name__}: {exc}"})
+    if total:
+        print()
+
+    if not crops.empty:
+        not_processed = ~crops["filename"].astype(str).isin(processed) & crops["crop_render_status"].eq("NOT_RUN")
+        crops.loc[not_processed, "crop_render_status"] = "NOT_IN_RENDER_SUBSET"
+        crops.loc[not_processed & crops["tower_detector_status"].isna(), "tower_detector_status"] = "NOT_IN_RENDER_SUBSET"
+        meta["status_counts"] = dict(Counter(crops["tower_detector_status"].fillna("NONE")))
+        meta["render_status_counts"] = dict(Counter(crops["crop_render_status"].fillna("NONE")))
+        meta["assignment_confidence_counts"] = dict(Counter(crops["tower_assignment_confidence"].dropna()))
+        meta["registration_status_counts"] = dict(Counter(crops["image_registration_status"].dropna()))
+        meta["qa_rendered"] = int(crops["crop_debug_path"].notna().sum())
+        attempted = crops[~crops["crop_render_status"].isin(["NOT_IN_RENDER_SUBSET", "NOT_RENDERED_OTHER_VIEW", "SOURCE_MISSING"])]
+        meta["attempted_pairs"] = int(len(attempted))
+        meta["rendered_pairs"] = int(attempted["crop_render_status"].eq("RENDERED").sum())
+        meta["crop_yield_percent"] = (100.0 * meta["rendered_pairs"] / len(attempted)) if len(attempted) else None
+        resid = pd.to_numeric(crops.get("prior_residual_px"), errors="coerce").dropna()
+        if len(resid):
+            meta["prior_residual_px"] = {"median": float(resid.median()), "p90": float(resid.quantile(0.9)), "n": int(len(resid))}
+    if image_detection_meta:
+        meta["images_analyzed"] = len([x for x in image_detection_meta if x.get("tile_count") is not None])
+        meta["tiles_analyzed_total"] = int(sum(int(x.get("tile_count", 0) or 0) for x in image_detection_meta))
+        meta["raw_detections_total"] = int(sum(int(x.get("raw_detection_count", 0) or 0) for x in image_detection_meta))
+        meta["tile_artifacts_rejected_total"] = int(sum(int(x.get("tile_artifacts_rejected", 0) or 0) for x in image_detection_meta))
+        meta["plausible_detections_total"] = int(sum(int(x.get("plausible_detection_count", 0) or 0) for x in image_detection_meta))
+        meta["rejected_detections_total"] = int(sum(int(x.get("rejected_detection_count", 0) or 0) for x in image_detection_meta))
+    if detector_error: meta["load_error"] = detector_error
+    if dino_error: meta["dino_load_error"] = dino_error
+    return man, crops, meta
+
+
 def render_candidate_products_and_crops(
     manifest: pd.DataFrame,
     crop_candidates: pd.DataFrame,
@@ -7291,8 +8112,8 @@ def render_visual_transition_review(
         rows.append(rec)
     return pd.DataFrame(rows)
 
-def main_v014(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Continuous oblique candidate-product POC v0.14")
+def main_v015(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Continuous oblique candidate-product POC v0.15")
     parser.add_argument("project_root", type=Path, help="Project root, e.g. D:\\Sev\\Obliques\\NYPA")
     parser.add_argument("--circuit", default=None, help="Circuit label. Default: infer from existing 163/staking filename")
     parser.add_argument("--epsg", type=int, default=None, help="Override working EPSG if PLS zone cannot be mapped")
@@ -7301,7 +8122,7 @@ def main_v014(argv: Sequence[str] | None = None) -> int:
         "--reference-topology", choices=["auto", "tow-ordinal", "identity"], default="auto",
         help="Physical PLS rows -> product/reference topology. Default: auto",
     )
-    parser.add_argument("--output", type=Path, default=None, help="Output directory. Default: <root>\\_continuous_oblique_poc_v07")
+    parser.add_argument("--output", type=Path, default=None, help="Output directory. Default: <root>\\_continuous_oblique_poc_v015")
     parser.add_argument("--max-eo-distance", type=float, default=None)
     parser.add_argument("--gap-tolerance", type=float, default=None)
     parser.add_argument("--min-overlap", type=float, default=None)
@@ -7409,6 +8230,29 @@ def main_v014(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--skip-tower-dino", action="store_true", help="Disable DINOv3 cross-frame tracking/refinement after tiled detection.")
     parser.add_argument("--tower-dino-model", default="facebook/dinov3-vits16-pretrain-lvd1689m", help="DINOv3 model used to track the same structure between overlapping images.")
     parser.add_argument("--tower-dino-device", default="auto", help="auto, cpu, cuda or cuda:N for tower DINO tracking. Default: auto.")
+    # v0.15 competitor-aware assignment / calibration / clean-up
+    parser.add_argument("--crop-qa-review-limit", type=int, default=200, help="Separate QA budget for AMBIGUOUS/COMPETITOR/LOW/MEDIUM cases under qa\\structure_detection\\review. Default: 200; 0 disables.")
+    parser.add_argument("--competitor-structures", default=None, help="Optional neighbour-circuit structure CSV(s) or a folder of *_structures.csv (FLI_frame_maker step-00 format with lat/lon, or project-CRS x/y). ';'-separated.")
+    parser.add_argument("--competitor-radius", type=float, default=None, help="Search radius around each target for competitor towers, project units. Default: 5.5 x --lidar-structure-radius.")
+    parser.add_argument("--disable-lidar-competitors", action="store_true", help="Do not derive competitor towers from LiDAR structure-class clusters.")
+    parser.add_argument("--cluster-cell-size", type=float, default=None, help="Grid cell for LiDAR tower clustering, project units. Default: --lidar-structure-radius / 9.")
+    parser.add_argument("--cluster-min-points", type=int, default=25)
+    parser.add_argument("--competitor-default-half-height", type=float, default=50.0, help="Half-height used for CSV competitors without a LiDAR cluster, project units.")
+    parser.add_argument("--tower-min-ownership", type=float, default=0.55, help="Minimum soft ownership of a detection by the target hypothesis. Default: 0.55.")
+    parser.add_argument("--tower-ownership-sigma-fraction", type=float, default=0.10, help="Ownership kernel sigma as a fraction of ROI diagonal. Default: 0.10.")
+    parser.add_argument("--tower-ambiguity-margin", type=float, default=0.05, help="Score margin below which two separate target-owned detections are AMBIGUOUS. Default: 0.05.")
+    parser.add_argument("--tower-ambiguity-min-separation", type=float, default=300.0, help="Detections closer than this (px) are duplicates, not ambiguity. Default: 300.")
+    parser.add_argument("--tower-nms-iomin", type=float, default=0.80, help="Suppress boxes whose intersection/min-area with a stronger box exceeds this. Default: 0.80.")
+    parser.add_argument("--tower-tile-artifact-fraction", type=float, default=0.96, help="Reject boxes spanning this fraction of a tile between opposite tile edges. Default: 0.96.")
+    parser.add_argument("--disable-registration", action="store_true", help="Do not jointly register projected hypotheses to detections per image.")
+    parser.add_argument("--registration-sigma-fraction", type=float, default=0.04, help="Registration match kernel as a fraction of ROI diagonal. Default: 0.04.")
+    parser.add_argument("--registration-min-matched", type=int, default=2, help="Hypotheses that must land on detections to accept a translation. Default: 2.")
+    parser.add_argument("--registration-min-margin", type=float, default=0.35, help="Support margin over the best different translation. Default: 0.35.")
+    parser.add_argument("--disable-bias-calibration", action="store_true", help="Do not correct priors with per-pass median detection offsets.")
+    parser.add_argument("--bias-window", type=int, default=15)
+    parser.add_argument("--bias-min-samples", type=int, default=3)
+    parser.add_argument("--bias-min-ownership", type=float, default=0.80)
+    parser.add_argument("--bias-min-detector-score", type=float, default=0.30)
 
     # v0.14 DINOv3 visual-continuity QA. DINO never changes sequence membership.
     parser.add_argument("--skip-dino", action="store_true", help="Skip DINOv3 visual continuity QA and run geometry/product generation only.")
@@ -7486,7 +8330,7 @@ def main_v014(argv: Sequence[str] | None = None) -> int:
     paths = discover_project(root)
     validate_required_paths(paths)
 
-    out_dir = args.output.resolve() if args.output else root / "_continuous_oblique_poc_v014"
+    out_dir = args.output.resolve() if args.output else root / "_continuous_oblique_poc_v015"
     out_dir.mkdir(parents=True, exist_ok=True)
     gpkg = out_dir / "continuous_oblique_poc_v014.gpkg"
     if gpkg.exists():
@@ -7677,23 +8521,49 @@ def main_v014(argv: Sequence[str] | None = None) -> int:
     if args.render_mode == "none" and args.skip_structure_crops:
         print("  Product/crop rendering disabled; writing manifests only.")
     tower_prompts = [p.strip() for p in str(args.tower_prompts).split("|") if p.strip()]
-    product_manifest, crop_candidates, tower_meta = render_candidate_products_and_crops_v14(
+    competitor_df = None
+    if args.competitor_structures:
+        competitor_df = load_competitor_structures(args.competitor_structures, crs, circuit)
+        print(f"  competitor structures loaded: {len(competitor_df)}")
+    lidar_r = float(args.lidar_structure_radius)
+    det_cfg = {
+        "model": args.tower_detector_model, "device": args.tower_detector_device, "backend": args.tower_detector_backend,
+        "threshold": args.tower_detection_threshold, "text_threshold": args.tower_text_threshold,
+        "tile_size": args.tower_tile_size, "tile_overlap": args.tower_tile_overlap, "tile_batch_size": args.tower_tile_batch_size,
+        "max_tiles": (None if args.tower_max_tiles_per_image == 0 else args.tower_max_tiles_per_image),
+        "prompts": tower_prompts, "nms_iou": args.tower_nms_iou, "nms_iomin": args.tower_nms_iomin,
+        "max_boxes": args.tower_max_boxes, "tile_artifact_fraction": args.tower_tile_artifact_fraction,
+        "min_aspect": args.tower_min_aspect, "max_aspect": args.tower_max_aspect,
+        "max_area_fraction": args.tower_max_area_fraction, "max_width_fraction": args.tower_max_width_fraction,
+        "max_height_fraction": args.tower_max_height_fraction,
+        "roi_radius_fraction": args.tower_roi_radius_fraction, "roi_min_radius": args.tower_roi_min_radius,
+        "roi_max_radius": args.tower_roi_max_radius,
+        "max_roi_area_fraction": args.tower_max_roi_area_fraction, "max_roi_width_fraction": args.tower_max_roi_width_fraction,
+        "max_roi_height_fraction": args.tower_max_roi_height_fraction,
+        "gate_fraction": args.tower_gate_fraction, "min_assignment_score": args.tower_min_assignment_score,
+        "min_ownership": args.tower_min_ownership, "ownership_sigma_fraction": args.tower_ownership_sigma_fraction,
+        "ambiguity_margin": args.tower_ambiguity_margin, "ambiguity_min_separation_px": args.tower_ambiguity_min_separation,
+        "lidar_competitors": not args.disable_lidar_competitors,
+        "competitor_radius": float(args.competitor_radius) if args.competitor_radius else 5.5 * lidar_r,
+        "cluster_cell_size": args.cluster_cell_size, "cluster_min_points": args.cluster_min_points,
+        "competitor_default_half_height": args.competitor_default_half_height,
+        "registration": not args.disable_registration,
+        "registration_sigma_fraction": args.registration_sigma_fraction,
+        "registration_min_matched": args.registration_min_matched,
+        "registration_min_margin": args.registration_min_margin,
+        "bias_calibration": not args.disable_bias_calibration, "bias_window": args.bias_window,
+        "bias_min_samples": args.bias_min_samples, "bias_min_ownership": args.bias_min_ownership,
+        "bias_min_detector_score": args.bias_min_detector_score,
+        "dino_enabled": not args.skip_tower_dino, "dino_model": args.tower_dino_model, "dino_device": args.tower_dino_device,
+    }
+    product_manifest, crop_candidates, tower_meta = render_candidate_products_and_crops_v15(
         product_manifest, crop_candidates, footprints, out_dir, circuit,
         args.reference_mode, args.opk_convention, args.render_mode,
         args.preview_max_dimension, args.jpeg_quality, args.crop_padding_factor,
         args.crop_min_size, args.crop_max_dimension, args.render_other_views,
         args.skip_structure_crops, args.render_limit, args.crop_qa_limit,
-        lidar_context, args.tower_detector_model, args.tower_detector_device,
-        args.tower_detector_backend, args.tower_detection_threshold, args.tower_text_threshold,
-        args.tower_tile_size, args.tower_tile_overlap, args.tower_tile_batch_size,
-        (None if args.tower_max_tiles_per_image == 0 else args.tower_max_tiles_per_image),
-        tower_prompts, args.tower_nms_iou, args.tower_max_boxes,
-        args.tower_min_aspect, args.tower_max_aspect, args.tower_max_area_fraction,
-        args.tower_max_width_fraction, args.tower_max_height_fraction,
-        args.tower_roi_radius_fraction, args.tower_roi_min_radius, args.tower_roi_max_radius,
-        args.tower_max_roi_area_fraction, args.tower_max_roi_width_fraction, args.tower_max_roi_height_fraction,
-        args.tower_gate_fraction, args.tower_min_assignment_score, args.tower_allow_no_prior, not args.skip_tower_dino,
-        args.tower_dino_model, args.tower_dino_device,
+        (None if args.crop_qa_review_limit is None else args.crop_qa_review_limit),
+        lidar_context, det_cfg, competitor_df,
     )
     span_review_limit = args.span_review_limit if args.span_review_limit is not None else args.render_limit
     span_review = render_span_completeness_review(
@@ -7778,7 +8648,7 @@ def main_v014(argv: Sequence[str] | None = None) -> int:
         direction_coverage, direction_gaps, gap_events, existing, span_benchmark,
         image_benchmark, opk_benchmark, circuit,
     )
-    summary["poc_version"] = "0.13"
+    summary["poc_version"] = "0.15"
     rendered_product = int(product_manifest["render_status"].astype(str).str.startswith("RENDERED").sum()) if not product_manifest.empty else 0
     rendered_crops = int(crop_candidates["crop_render_status"].eq("RENDERED").sum()) if not crop_candidates.empty else 0
     geom_candidates = images_df[images_df["valid_for_product"].eq(True)] if len(images_df) else pd.DataFrame()
@@ -8034,7 +8904,8 @@ def main_v014(argv: Sequence[str] | None = None) -> int:
     if not args.skip_structure_crops:
         pcounts = dict(Counter(crop_candidates["crop_projection_status"])) if not crop_candidates.empty else {}
         print(f"Structure crop projection: LiDAR 3-D points + EO + local Grounding-DINO ROI; statuses={pcounts}")
-        print("Grounding DINO is restricted to local geometry ROIs; no full-image tower-search fallback is used.")
+        print(f"Assignment confidence: {tower_meta.get('assignment_confidence_counts', {})}  crop yield: {tower_meta.get('crop_yield_percent')}%  prior residual: {tower_meta.get('prior_residual_px')}")
+        print("Grounding DINO is restricted to local geometry ROIs; competitor towers are projected with the same camera model.")
         print("Structure crops use projected LiDAR structure points; lens distortion is not explicitly modelled.")
     print("Span visibility is QA metadata only. Partial-span/no-structure frames are kept when they belong to the legal continuous sequence.")
     print("Capture date inference uses raw EXIF or --capture-date; existing 163 is benchmark-only.")
@@ -8044,4 +8915,4 @@ def main_v014(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main_v014())
+    raise SystemExit(main_v015())

@@ -72,3 +72,15 @@ labels blindly.
 
 Do not force one `--capture-date` for a dataset that contains multiple acquisition dates. Prefer raw
 EXIF, then EO-source mode, and use an explicit date only when independent metadata is unavailable.
+
+## v0.14 detector smoke run (DH1, SR1-60/03-05, 3 frames, 5 crops)
+
+- every crop showed a real lattice tower (no field/shadow crops);
+- 1 of 5 showed the wrong circuit: SR1-60/05 in frame 40292 was assigned the DH2 tower. Confirmed via
+  FLI step-00 coordinates: DH2 `NR-02-60/04` lies ~46 m south of DH1 `SR1-60/04`, camera bearing ~274°,
+  so DH2 appears on the left of the frame - the side of the selected box;
+- geometry-prior offset: median 1025 px, p90 1468 px, mostly along-track;
+- many tile-height boxes (shadows/conductors clipped at tile edges) and nested duplicate boxes survived
+  IoU-NMS;
+- the per-pass residual consistency check isolates the wrong-circuit crop (robust z = 5.5, others < 1.3);
+- catalogue structure coordinates match the FLI KMZ-derived DH1 structure coordinates to ~1 m.

@@ -54,9 +54,23 @@ Within the clean Grade-A subset, reference disagreements were dominated by a sys
 shift, particularly on backward travel. This supports a direction-aware span resolver rather than a
 simple global offset or blind tuning to the manual labels.
 
+## Structure detection
+
+v0.14 smoke run (5 crops): 5/5 real towers, 4/5 correct structure, 1/5 parallel-circuit tower
+(details in `OBSERVATIONS.md`). This is anecdotal; use `tools/evaluate_structure_detector_v01.py` on a
+full run with adjudication for precision/recall.
+
+v0.15 synthetic regression (`tests/test_v015_competitor_integration.py`): two circuits 165 ft apart,
+prior offset (-250, -300) px > half the tower spacing, neighbour towers scored higher by the detector.
+The real v0.14 function selects the neighbour in 6/6 pairs; v0.15 selects the target in 6/6, recovers the
+offset within 20 px and applies it as pass bias from the third frame.
+
 ## Validation tooling
 
 - `tools/compare_manual_vs_ai_v01.py`: source selection and span attribution comparison;
 - `tools/audit_manual_163_v03.py`: independent DINO + geometry audit of the manual product;
 - `tools/adjudicate_manual_vs_ai_v01.py`: focused human adjudication pack for clean span disagreements
-  and possible pass-classifier conflicts.
+  and possible pass-classifier conflicts;
+- `tools/evaluate_structure_detector_v01.py`: crop yield, status/registration counts, residuals and,
+  with labels, precision / wrong-structure rate / recall estimate;
+- `tests/`: pytest unit and synthetic integration tests (`python -m pytest tests`).
